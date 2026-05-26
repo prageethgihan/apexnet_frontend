@@ -1331,21 +1331,74 @@ function Footer() {
   )
 }
 
+// ─── Plan visual config (landing page) ───────────────────────────────────────
+const LANDING_PLAN_THEME = {
+  standard: { badge: null,   badgeClr: null,      accent: 'rgba(0,245,255,0.25)',  glow: 'rgba(0,245,255,0.06)',   isPopular: false },
+  vip:      { badge: 'HOT',  badgeClr: '#f97316', accent: 'rgba(249,115,22,0.35)', glow: 'rgba(249,115,22,0.12)',  isPopular: true  },
+  mvp:      { badge: 'BEST', badgeClr: '#bf00ff', accent: 'rgba(191,0,255,0.32)', glow: 'rgba(191,0,255,0.10)',  isPopular: false },
+}
+
 // ─── Pricing Section (Landing Page) ──────────────────────────────────────────
+const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+
 function PricingSection({ onSelectPlan }) {
   const [hoveredIndex, setHoveredIndex] = useState(null)
-  
-  const premiumPlans = [
-    { name: 'Standard Pack', limit: '150GB', price: '850', badge: null, color: C.textMuted },
-    { name: 'Popular Choice', limit: '300GB', price: '1500', badge: 'HOT', color: C.purple, badgeClr: '#bf00ff' },
-    { name: 'Power User', limit: '600GB', price: '2500', badge: null, color: C.cyan },
-    { name: 'No Limits', limit: 'Unlimited', price: '3500', badge: 'BEST', color: C.cyan, badgeClr: '#00f5d4' }
-  ]
+  const [plans,      setPlans]      = useState([])
+  const [plansState, setPlansState] = useState('loading') // 'loading' | 'ok' | 'error'
+
+  useEffect(() => {
+    const fetchPlans = async () => {
+      try {
+        const res  = await fetch(`${API_BASE}/api/vpn/plans`, { signal: AbortSignal.timeout(10_000) })
+        const json = await res.json()
+        if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`)
+
+        let list = []
+        if (Array.isArray(json.plans)) {
+          list = json.plans.map(p => ({
+            id:          p.id,
+            name:        p.name,
+            price:       p.priceLKR ?? p.price,
+            dataLabel:   p.dataLimitGB === 0 ? 'Unlimited' : `${p.dataLimitGB ?? p.dataGB} GB`,
+            deviceLimit: p.deviceLimit,
+            days:        p.expiryDays ?? p.days ?? 30,
+          }))
+        } else if (typeof json === 'object' && json !== null) {
+          const SKIP = new Set(['success', 'message', 'error', 'plans'])
+          list = Object.entries(json)
+            .filter(([k]) => !SKIP.has(k))
+            .map(([id, p]) => ({
+              id,
+              name:        p.name ?? id,
+              price:       p.priceLKR ?? (typeof p.price === 'string' ? parseInt(p.price) : p.price),
+              dataLabel:   (p.dataGB === 0 || p.dataLimitGB === 0) ? 'Unlimited' : `${p.dataLimitGB ?? p.dataGB} GB`,
+              deviceLimit: p.deviceLimit ?? 2,
+              days:        p.days ?? p.expiryDays ?? 30,
+            }))
+        }
+        if (!list.length) throw new Error('No plans returned.')
+        setPlans(list)
+        setPlansState('ok')
+      } catch (err) {
+        console.error('[PricingSection] fetch plans:', err.message)
+        // Fallback to known correct values so page is never broken
+        setPlans([
+          { id: 'standard', name: 'Standard', price: 399, dataLabel: '150 GB',    deviceLimit: 2, days: 30 },
+          { id: 'vip',      name: 'VIP',      price: 699, dataLabel: '300 GB',    deviceLimit: 5, days: 30 },
+          { id: 'mvp',      name: 'MVP',      price: 949, dataLabel: 'Unlimited', deviceLimit: 8, days: 30 },
+        ])
+        setPlansState('ok')
+      }
+    }
+    fetchPlans()
+  }, [])
+
+  const premiumPlans = plans  // alias for minimal diff below
 
   return (
     <section id="packages" style={{ padding: '80px 24px 60px', position: 'relative' }}>
-      <div style={{ maxWidth: 1024, margin: '0 auto' }}>
-        
+      <div style={{ maxWidth: 860, margin: '0 auto' }}>
+
         {/* Section title */}
         <div style={{ textAlign: 'center', marginBottom: 50 }}>
           <h2 style={{
@@ -1367,99 +1420,123 @@ function PricingSection({ onSelectPlan }) {
           </p>
         </div>
 
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-          gap: 20,
-        }}>
-          {premiumPlans.map((plan, i) => {
-            const isPopular = plan.badge === 'HOT'
-            const isHovered = hoveredIndex === i
-            return (
-              <div
-                key={i}
-                onMouseEnter={() => setHoveredIndex(i)}
-                onMouseLeave={() => setHoveredIndex(null)}
-                style={{
-                  background: 'rgba(7,17,28,0.85)',
-                  backdropFilter: 'blur(20px)',
-                  border: `1px solid ${isHovered ? (isPopular ? 'rgba(191,0,255,0.45)' : 'rgba(0,245,255,0.25)') : (isPopular ? 'rgba(191,0,255,0.25)' : 'rgba(0,245,255,0.08)')}`,
-                  borderRadius: 20, 
-                  padding: 24,
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  gap: 16,
-                  position: 'relative',
-                  transition: 'all 0.3s ease',
-                  transform: isHovered ? 'translateY(-4px)' : 'translateY(0)',
-                  boxShadow: isPopular 
-                    ? `0 0 30px rgba(191,0,255,0.06)${isHovered ? ', 0 0 40px rgba(191,0,255,0.15)' : ''}` 
-                    : (isHovered ? '0 0 30px rgba(0,245,255,0.1)' : 'none'),
-                }}
-              >
-                {plan.badge && (
-                  <span style={{
-                    position: 'absolute', top: 12, right: 12,
-                    fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999,
-                    background: `${plan.badgeClr}22`, color: plan.badgeClr,
-                    border: `1px solid ${plan.badgeClr}55`,
-                    letterSpacing: 1,
-                  }}>{plan.badge}</span>
-                )}
-                
-                <div>
-                  <h4 style={{ color: C.textMuted, fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{plan.name}</h4>
-                  <div style={{ color: '#fff', fontSize: 28, fontWeight: 800, fontFamily: "'Orbitron', monospace", marginTop: 8 }}>{plan.limit}</div>
-                </div>
+        {/* Loading skeletons */}
+        {plansState === 'loading' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 20 }}>
+            {[0, 1, 2].map(i => (
+              <div key={i} style={{
+                background: 'rgba(7,17,28,0.7)', borderRadius: 20, padding: 28,
+                border: '1px solid rgba(255,255,255,0.05)',
+                display: 'flex', flexDirection: 'column', gap: 16,
+                animation: 'pulse 1.8s ease-in-out infinite',
+              }}>
+                <div style={{ height: 12, width: '55%', borderRadius: 8, background: 'rgba(255,255,255,0.06)' }} />
+                <div style={{ height: 28, width: '70%', borderRadius: 8, background: 'rgba(255,255,255,0.07)' }} />
+                <div style={{ height: 18, width: '45%', borderRadius: 8, background: 'rgba(255,255,255,0.06)' }} />
+                <div style={{ height: 40, borderRadius: 12, background: 'rgba(255,255,255,0.04)', marginTop: 8 }} />
+              </div>
+            ))}
+          </div>
+        )}
 
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-                  <span style={{ color: C.cyan, fontSize: 20, fontWeight: 700 }}>LKR {plan.price}</span>
-                  <span style={{ color: C.textDim, fontSize: 12 }}>/ month</span>
-                </div>
-
-                <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <CheckCircle size={12} color={C.cyan} /> High-Speed Nodes
-                  </li>
-                  <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <CheckCircle size={12} color={C.cyan} /> AES-256 Encryption
-                  </li>
-                  <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <CheckCircle size={12} color={C.cyan} /> WhatsApp Support
-                  </li>
-                </ul>
-
-                <button
-                  onClick={() => onSelectPlan(plan.limit)}
+        {/* Plan cards */}
+        {plansState === 'ok' && (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
+            gap: 20,
+          }}>
+            {premiumPlans.map((plan, i) => {
+              const theme = LANDING_PLAN_THEME[plan.id] || LANDING_PLAN_THEME.standard
+              const { badge, badgeClr, isPopular } = theme
+              const isHovered = hoveredIndex === i
+              return (
+                <div
+                  key={plan.id || i}
+                  onMouseEnter={() => setHoveredIndex(i)}
+                  onMouseLeave={() => setHoveredIndex(null)}
                   style={{
-                    width: '100%', padding: '12px', borderRadius: 12,
-                    background: isPopular
-                      ? 'linear-gradient(135deg, rgba(191,0,255,0.15), rgba(0,245,255,0.15))'
-                      : 'rgba(255,255,255,0.03)',
-                    border: `1px solid ${isPopular ? 'rgba(191,0,255,0.3)' : 'rgba(255,255,255,0.08)'}`,
-                    color: isPopular ? C.purple : C.textPrimary,
-                    fontFamily: "'Orbitron', monospace", fontSize: 11, fontWeight: 700,
-                    letterSpacing: 1, cursor: 'pointer', transition: 'all 0.2s',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                  }}
-                  onMouseEnter={e => {
-                    e.currentTarget.style.background = isPopular
-                      ? 'linear-gradient(135deg, rgba(191,0,255,0.22), rgba(0,245,255,0.22))'
-                      : 'rgba(255,255,255,0.08)'
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.background = isPopular
-                      ? 'linear-gradient(135deg, rgba(191,0,255,0.15), rgba(0,245,255,0.15))'
-                      : 'rgba(255,255,255,0.03)'
+                    background: 'rgba(7,17,28,0.85)',
+                    backdropFilter: 'blur(20px)',
+                    border: `1px solid ${isHovered ? theme.accent : (isPopular ? theme.accent.replace('0.35', '0.2') : 'rgba(0,245,255,0.08)')}`,
+                    borderRadius: 20,
+                    padding: 24,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 16,
+                    position: 'relative',
+                    transition: 'all 0.3s ease',
+                    transform: isHovered ? 'translateY(-4px)' : 'translateY(0)',
+                    boxShadow: isHovered ? `0 0 36px ${theme.glow}` : (isPopular ? `0 0 24px ${theme.glow}` : 'none'),
                   }}
                 >
-                  <MessageCircle size={14} />
-                  Order Now
-                </button>
-              </div>
-            )
-          })}
-        </div>
+                  {badge && (
+                    <span style={{
+                      position: 'absolute', top: 12, right: 12,
+                      fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999,
+                      background: `${badgeClr}22`, color: badgeClr,
+                      border: `1px solid ${badgeClr}55`,
+                      letterSpacing: 1,
+                    }}>{badge}</span>
+                  )}
+
+                  <div>
+                    <h4 style={{ color: C.textMuted, fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{plan.name}</h4>
+                    <div style={{ color: '#fff', fontSize: 28, fontWeight: 800, fontFamily: "'Orbitron', monospace", marginTop: 8 }}>{plan.dataLabel}</div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                    <span style={{ color: C.cyan, fontSize: 22, fontWeight: 800, fontFamily: "'Orbitron', monospace" }}>LKR {plan.price}</span>
+                    <span style={{ color: C.textDim, fontSize: 12 }}>/ {plan.days} days</span>
+                  </div>
+
+                  <ul style={{ listStyle: 'none', padding: 0, margin: '4px 0 auto', display: 'flex', flexDirection: 'column', gap: 7 }}>
+                    <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <CheckCircle size={12} color={C.cyan} /> {plan.dataLabel} Data
+                    </li>
+                    <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <CheckCircle size={12} color={C.cyan} /> {plan.deviceLimit} Simultaneous Devices
+                    </li>
+                    <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <CheckCircle size={12} color={C.cyan} /> AES-256 Encryption
+                    </li>
+                    <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <CheckCircle size={12} color={C.cyan} /> WhatsApp Support
+                    </li>
+                  </ul>
+
+                  <button
+                    onClick={() => onSelectPlan(plan.id)}
+                    style={{
+                      width: '100%', padding: '12px', borderRadius: 12,
+                      background: isPopular
+                        ? 'linear-gradient(135deg, rgba(249,115,22,0.15), rgba(191,0,255,0.15))'
+                        : 'rgba(255,255,255,0.03)',
+                      border: `1px solid ${isPopular ? 'rgba(249,115,22,0.3)' : 'rgba(255,255,255,0.08)'}`,
+                      color: isPopular ? '#f97316' : C.textPrimary,
+                      fontFamily: "'Orbitron', monospace", fontSize: 11, fontWeight: 700,
+                      letterSpacing: 1, cursor: 'pointer', transition: 'all 0.2s',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                    }}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.background = isPopular
+                        ? 'linear-gradient(135deg, rgba(249,115,22,0.22), rgba(191,0,255,0.22))'
+                        : 'rgba(255,255,255,0.08)'
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.background = isPopular
+                        ? 'linear-gradient(135deg, rgba(249,115,22,0.15), rgba(191,0,255,0.15))'
+                        : 'rgba(255,255,255,0.03)'
+                    }}
+                  >
+                    <MessageCircle size={14} />
+                    Order Now
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
     </section>
   )
@@ -1467,10 +1544,10 @@ function PricingSection({ onSelectPlan }) {
 
 // ─── Landing page wrapper ────────────────────────────────────────────────────
 function LandingPage({ onLogin, onLoginAndClaim }) {
-  const [selectedLimit, setSelectedLimit] = useState('')
+  const [selectedPlanId, setSelectedPlanId] = useState('')
 
-  const handleSelectPlan = (limit) => {
-    setSelectedLimit(limit)
+  const handleSelectPlan = (planId) => {
+    setSelectedPlanId(planId)
     const orderFormEl = document.getElementById('order')
     if (orderFormEl) {
       orderFormEl.scrollIntoView({ behavior: 'smooth' })
@@ -1483,7 +1560,7 @@ function LandingPage({ onLogin, onLoginAndClaim }) {
       <HeroSection onLoginAndClaim={onLoginAndClaim} />
       <FeatureCards />
       <PricingSection onSelectPlan={handleSelectPlan} />
-      <OrderForm selectedLimit={selectedLimit} setSelectedLimit={setSelectedLimit} />
+      <OrderForm selectedLimit={selectedPlanId} setSelectedLimit={setSelectedPlanId} />
       <Footer />
     </div>
   )
@@ -1518,11 +1595,11 @@ function CustomerDashboard({ user, onLogout, trialClaimed, onClaimTrial, trialLo
     }
   }
 
+  // Plans are fetched by PricingSection — CustomerDashboard shows plans for logged-in order flow
   const premiumPlans = [
-    { name: 'Standard Pack', limit: '150GB', price: '850', badge: null, color: C.textMuted },
-    { name: 'Popular Choice', limit: '300GB', price: '1500', badge: 'HOT', color: C.purple, badgeClr: '#bf00ff' },
-    { name: 'Power User', limit: '600GB', price: '2500', badge: null, color: C.cyan },
-    { name: 'No Limits', limit: 'Unlimited', price: '3500', badge: 'BEST', color: C.cyan, badgeClr: '#00f5d4' }
+    { id: 'standard', name: 'Standard',  limit: '150 GB',    price: '399', badge: null,   color: C.textMuted, badgeClr: null      },
+    { id: 'vip',      name: 'VIP',       limit: '300 GB',    price: '699', badge: 'HOT',  color: C.purple,    badgeClr: '#f97316' },
+    { id: 'mvp',      name: 'MVP',       limit: 'Unlimited', price: '949', badge: 'BEST', color: C.cyan,      badgeClr: '#bf00ff' },
   ]
 
   return (
