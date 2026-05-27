@@ -36,13 +36,31 @@ const ISP_PACKAGES = [
   { value: 'Airtel Unlimited',          label: 'Airtel — Unlimited' },
 ]
 
-const DATA_OPTIONS = [
-  { value: '5GB (1-Day Free Trial)', label: '5 GB',      sub: '1-Day Free Trial', badge: 'FREE', badgeClr: '#22c55e', Icon: Star },
-  { value: '150GB',                  label: '150 GB',    sub: 'Standard',         badge: null,   badgeClr: null,     Icon: Wifi },
-  { value: '300GB',                  label: '300 GB',    sub: 'Popular',          badge: 'HOT',  badgeClr: '#f97316',Icon: Zap },
-  { value: '600GB',                  label: '600 GB',    sub: 'Power User',       badge: null,   badgeClr: null,     Icon: Server },
-  { value: 'Unlimited',              label: 'Unlimited', sub: 'No Limits',        badge: 'BEST', badgeClr: '#00f5d4',Icon: Globe },
+// ─── ORDER FORM: Plan theme config (mirrors CreateVpnModal themes) ─────────────
+const ORDER_PLAN_THEME = {
+  standard: {
+    accent: '#00f5ff', accentBg: 'rgba(0,245,255,0.07)', accentBorder: 'rgba(0,245,255,0.38)',
+    glow: 'rgba(0,245,255,0.18)', badge: null, badgeClr: null, Icon: Wifi,
+  },
+  vip: {
+    accent: '#f97316', accentBg: 'rgba(249,115,22,0.07)', accentBorder: 'rgba(249,115,22,0.38)',
+    glow: 'rgba(249,115,22,0.18)', badge: 'HOT', badgeClr: '#f97316', Icon: Zap,
+  },
+  mvp: {
+    accent: '#bf00ff', accentBg: 'rgba(191,0,255,0.07)', accentBorder: 'rgba(191,0,255,0.38)',
+    glow: 'rgba(191,0,255,0.18)', badge: 'BEST', badgeClr: '#bf00ff', Icon: Globe,
+  },
+}
+
+const ORDER_FALLBACK_PLANS = [
+  { id: 'standard', name: 'Standard', price: '399 LKR', dataGB: 150, deviceLimit: 2, days: 30 },
+  { id: 'vip',      name: 'VIP',      price: '699 LKR', dataGB: 300, deviceLimit: 5, days: 30 },
+  { id: 'mvp',      name: 'MVP',      price: '949 LKR', dataGB: 0,   deviceLimit: 8, days: 30 },
 ]
+
+const ORDER_API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+
+const fmtOrderData = (gb) => (gb === 0 || gb === null || gb === undefined) ? 'Unlimited' : `${gb} GB`
 
 const FEATURES = [
   { Icon: Shield, title: 'Military-Grade Encryption', desc: 'AES-256 secured tunnels' },
@@ -962,20 +980,65 @@ function FeatureCards() {
 
 // ─── Order Form ──────────────────────────────────────────────────────────────
 function OrderForm({ selectedLimit, setSelectedLimit }) {
-  const [form, setForm]   = useState({ isp:'', dataLimit:'', name:'', whatsapp:'' })
-  const [errors, setErrs] = useState({})
-  const [sent, setSent]   = useState(false)
-  const [toast, setToast] = useState(null)
+  const [form, setForm]    = useState({ isp: '', selectedPlan: 'vip', name: '', whatsapp: '' })
+  const [errors, setErrs]  = useState({})
+  const [sent, setSent]    = useState(false)
+  const [toast, setToast]  = useState(null)
+
+  // ── Plans (fetched from API) ──────────────────────────────────────────────
+  const [plans,      setPlans]      = useState([])
+  const [plansState, setPlansState] = useState('loading') // 'loading' | 'ok'
 
   useEffect(() => {
-    if (selectedLimit) {
-      setForm(p => ({ ...p, dataLimit: selectedLimit }))
+    const fetchPlans = async () => {
+      try {
+        const res  = await fetch(`${ORDER_API_BASE}/api/vpn/plans`, { signal: AbortSignal.timeout(10_000) })
+        const json = await res.json()
+        if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`)
+
+        let list = []
+        if (Array.isArray(json.plans)) {
+          list = json.plans.map(p => ({
+            id:          p.id,
+            name:        p.name,
+            price:       p.priceLKR ? `${p.priceLKR} LKR` : (p.price ?? '—'),
+            dataGB:      p.dataLimitGB ?? p.dataGB ?? 0,
+            deviceLimit: p.deviceLimit,
+            days:        p.expiryDays ?? p.days ?? 30,
+          }))
+        } else if (typeof json === 'object' && json !== null) {
+          const SKIP = new Set(['success', 'message', 'error', 'plans'])
+          list = Object.entries(json)
+            .filter(([k]) => !SKIP.has(k))
+            .map(([id, p]) => ({
+              id,
+              name:        p.name ?? id,
+              price:       p.price ?? (p.priceLKR ? `${p.priceLKR} LKR` : '—'),
+              dataGB:      p.dataGB ?? p.dataLimitGB ?? 0,
+              deviceLimit: p.deviceLimit ?? 2,
+              days:        p.days ?? p.expiryDays ?? 30,
+            }))
+        }
+        setPlans(list.length ? list : ORDER_FALLBACK_PLANS)
+        setPlansState('ok')
+      } catch {
+        setPlans(ORDER_FALLBACK_PLANS)
+        setPlansState('ok')
+      }
     }
-  }, [selectedLimit])
+    fetchPlans()
+  }, [])
+
+  useEffect(() => {
+    if (selectedLimit && plans.length) {
+      const match = plans.find(p => p.id === selectedLimit)
+      if (match) setForm(prev => ({ ...prev, selectedPlan: match.id }))
+    }
+  }, [selectedLimit, plans])
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type })
-  };
+  }
 
   useEffect(() => {
     if (toast) {
@@ -986,10 +1049,10 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
 
   const validate = () => {
     const e = {}
-    if (!form.isp)          e.isp       = 'Please select an ISP package.'
-    if (!form.dataLimit)    e.dataLimit  = 'Please select a data limit.'
-    if (!form.name.trim())  e.name       = 'Full name is required.'
-    if (!form.whatsapp.trim())           e.whatsapp = 'WhatsApp number is required.'
+    if (!form.isp)             e.isp          = 'Please select an ISP package.'
+    if (!form.selectedPlan)    e.selectedPlan  = 'Please select a plan.'
+    if (!form.name.trim())     e.name          = 'Full name is required.'
+    if (!form.whatsapp.trim()) e.whatsapp = 'WhatsApp number is required.'
     else if (!/^[\d\s+\-()]{7,20}$/.test(form.whatsapp.trim())) e.whatsapp = 'Enter a valid phone number.'
     return e
   }
@@ -1000,22 +1063,32 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
     if (Object.keys(e).length) { setErrs(e); return }
     setErrs({})
     setSent(true)
-    
+
+    const activePlan = plans.find(p => p.id === form.selectedPlan)
+    const planLabel  = activePlan ? `${activePlan.name} (${activePlan.price})` : form.selectedPlan
+
     try {
       await addDoc(collection(db, 'pending_orders'), {
-        name: form.name.trim(),
-        whatsapp: form.whatsapp.trim(),
-        package: form.isp,
-        dataLimit: form.dataLimit,
-        status: 'Pending',
-        timestamp: serverTimestamp()
+        name:         form.name.trim(),
+        whatsapp:     form.whatsapp.trim(),
+        package:      form.isp,
+        selectedPlan: form.selectedPlan,
+        planLabel,
+        status:       'Pending',
+        timestamp:    serverTimestamp()
       })
       showToast('Order saved successfully! Redirecting...', 'success')
-      const msg = `Hello ApexNet LK! 🚀 I would like to order a new VPN connection.\n*Name:* ${form.name}\n*WhatsApp:* ${form.whatsapp}\n*Package:* ${form.isp}\n*Data Limit:* ${form.dataLimit}`
+      const msg = [
+        `Hello ApexNet LK! 🚀 I would like to order a new VPN connection.`,
+        `*Name:* ${form.name}`,
+        `*WhatsApp:* ${form.whatsapp}`,
+        `*ISP Package:* ${form.isp}`,
+        `*Plan:* ${planLabel}`,
+      ].join('\n')
       window.open(`https://wa.me/947XXXXXXXX?text=${encodeURIComponent(msg)}`, '_blank')
     } catch (err) {
-      console.error('Error saving order to Firestore: ', err)
-      showToast('Failed to save order to database. Please check connection.', 'error')
+      console.error('Error saving order to Firestore:', err)
+      showToast('Failed to save order. Please check your connection.', 'error')
     } finally {
       setTimeout(() => setSent(false), 3000)
     }
@@ -1024,12 +1097,8 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
   const setF = (k, v) => {
     setForm(p => ({ ...p, [k]: v }))
     setErrs(p => ({ ...p, [k]: undefined }))
-    if (k === 'dataLimit' && setSelectedLimit) {
-      setSelectedLimit(v)
-    }
   }
 
-  // shared input style
   const inputStyle = (hasErr) => ({
     width:'100%', padding:'14px 14px 14px 40px',
     background:'rgba(4,10,18,0.9)', color:C.textPrimary,
@@ -1050,9 +1119,10 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
     color:'#f87171', fontSize:11, marginTop:6,
   }
 
+  const fmtOrderData = (gb) => gb >= 1000 ? 'Unlimited' : `${gb} GB`
+
   return (
     <section id="order" style={{ padding:'80px 24px 60px', position:'relative' }}>
-      {/* Background glow */}
       <div style={{
         position:'absolute', inset:0, pointerEvents:'none',
         display:'flex', alignItems:'center', justifyContent:'center',
@@ -1065,7 +1135,6 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
 
       <div style={{ position:'relative', maxWidth:620, margin:'0 auto' }}>
 
-        {/* Section header */}
         <div style={{ textAlign:'center', marginBottom:40 }}>
           <div style={{
             display:'inline-flex', alignItems:'center', gap:8,
@@ -1097,7 +1166,6 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
           </p>
         </div>
 
-        {/* Form card */}
         <div style={{
           background:'rgba(7,17,28,0.85)',
           backdropFilter:'blur(32px)',
@@ -1107,7 +1175,6 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
         }}>
           <form onSubmit={handleSubmit} noValidate>
 
-            {/* ISP Package */}
             <div style={{ marginBottom:28 }}>
               <label style={labelStyle}>
                 <Wifi size={14} color={C.cyan} /> ISP Package
@@ -1136,59 +1203,123 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
               {errors.isp && <p style={errStyle}><AlertCircle size={11} />{errors.isp}</p>}
             </div>
 
-            {/* Data Limit */}
             <div style={{ marginBottom:28 }}>
-              <label style={labelStyle}>
-                <Radio size={14} color={C.cyan} /> Data Limit
+              <label style={{ ...labelStyle, marginBottom:12 }}>
+                <Zap size={14} color={C.cyan} /> Select Plan
               </label>
-              <div style={{
-                display:'grid',
-                gridTemplateColumns:'repeat(auto-fill, minmax(150px, 1fr))',
-                gap:12,
-              }}>
-                {DATA_OPTIONS.map(opt => {
-                  const sel = form.dataLimit === opt.value
-                  return (
-                    <div
-                      key={opt.value}
-                      onClick={() => setF('dataLimit', opt.value)}
-                      style={{
-                        position:'relative', cursor:'pointer',
-                        borderRadius:14, padding:'14px 14px 12px',
-                        border:`1px solid ${sel ? C.cyan : 'rgba(255,255,255,0.09)'}`,
-                        background: sel ? 'rgba(0,245,255,0.07)' : 'rgba(255,255,255,0.03)',
-                        boxShadow: sel ? `0 0 20px rgba(0,245,255,0.18)` : 'none',
-                        display:'flex', flexDirection:'column', alignItems:'flex-start', gap:4,
-                        transition:'all 0.25s ease',
-                        userSelect:'none',
-                      }}
-                      onMouseEnter={e => { if(!sel){ e.currentTarget.style.borderColor='rgba(0,245,255,0.35)'; e.currentTarget.style.transform='translateY(-2px)'; }}}
-                      onMouseLeave={e => { if(!sel){ e.currentTarget.style.borderColor='rgba(255,255,255,0.09)'; e.currentTarget.style.transform='translateY(0)'; }}}
-                    >
-                      {opt.badge && (
-                        <span style={{
-                          position:'absolute', top:8, right:8,
-                          fontSize:9, fontWeight:700, padding:'2px 7px', borderRadius:999,
-                          background:`${opt.badgeClr}22`, color:opt.badgeClr,
-                          border:`1px solid ${opt.badgeClr}55`,
-                          letterSpacing:1,
-                        }}>{opt.badge}</span>
-                      )}
-                      <opt.Icon size={16} color={sel ? C.cyan : '#64748b'} />
-                      <span style={{ fontWeight:700, fontSize:14, color: sel ? C.cyan : '#fff' }}>{opt.label}</span>
-                      <span style={{ fontSize:11, color:'#475569' }}>{opt.sub}</span>
-                      {sel && (
-                        <CheckCircle size={13} color={C.cyan}
-                          style={{ position:'absolute', bottom:8, right:8 }} />
-                      )}
+
+              {plansState === 'loading' && (
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12 }}>
+                  {[0,1,2].map(i => (
+                    <div key={i} style={{
+                      borderRadius:16, padding:'20px 12px',
+                      border:'1px solid rgba(255,255,255,0.05)',
+                      background:'rgba(255,255,255,0.02)',
+                      display:'flex', flexDirection:'column', alignItems:'center', gap:10,
+                      animation:'pulse 1.8s ease-in-out infinite',
+                    }}>
+                      <div style={{ width:32, height:32, borderRadius:8, background:'rgba(255,255,255,0.06)' }} />
+                      <div style={{ height:10, width:'60%', borderRadius:6, background:'rgba(255,255,255,0.06)' }} />
+                      <div style={{ height:14, width:'75%', borderRadius:6, background:'rgba(255,255,255,0.07)' }} />
+                      <div style={{ height:9,  width:'50%', borderRadius:6, background:'rgba(255,255,255,0.05)' }} />
                     </div>
-                  )
-                })}
-              </div>
-              {errors.dataLimit && <p style={errStyle}><AlertCircle size={11} />{errors.dataLimit}</p>}
+                  ))}
+                </div>
+              )}
+
+              {plansState === 'ok' && (
+                <div style={{
+                  display:'grid',
+                  gridTemplateColumns:'repeat(3,1fr)',
+                  gap:12,
+                }}>
+                  {plans.map(plan => {
+                    const theme = ORDER_PLAN_THEME[plan.id] || ORDER_PLAN_THEME.standard
+                    const { Icon: PlanIcon } = theme
+                    const sel = form.selectedPlan === plan.id
+                    return (
+                      <button
+                        key={plan.id}
+                        type="button"
+                        onClick={() => {
+                          setForm(p => ({ ...p, selectedPlan: plan.id }))
+                          setErrs(p => ({ ...p, selectedPlan: undefined }))
+                          if (setSelectedLimit) setSelectedLimit(plan.id)
+                        }}
+                        style={{
+                          position:'relative',
+                          display:'flex', flexDirection:'column', alignItems:'center',
+                          gap:6, padding:'18px 8px 14px', borderRadius:16,
+                          cursor:'pointer', textAlign:'center',
+                          border: `1.5px solid ${sel ? theme.accentBorder : 'rgba(255,255,255,0.07)'}`,
+                          background: sel ? theme.accentBg : 'rgba(255,255,255,0.02)',
+                          boxShadow: sel ? `0 0 24px ${theme.glow}` : 'none',
+                          transition:'all 0.22s ease',
+                          transform: sel ? 'translateY(-2px)' : 'translateY(0)',
+                        }}
+                        onMouseEnter={e => { if (!sel) { e.currentTarget.style.borderColor = theme.accentBorder; e.currentTarget.style.transform = 'translateY(-1px)' }}}
+                        onMouseLeave={e => { if (!sel) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.07)'; e.currentTarget.style.transform = 'translateY(0)' }}}
+                      >
+                        {theme.badge && (
+                          <div style={{
+                            position:'absolute', top:-9, left:'50%', transform:'translateX(-50%)',
+                            background: theme.badgeClr, color:'#fff',
+                            fontSize:8, fontWeight:900, padding:'2px 8px', borderRadius:999,
+                            letterSpacing:0.8, whiteSpace:'nowrap',
+                            boxShadow: `0 0 10px ${theme.badgeClr}88`,
+                          }}>
+                            {theme.badge}
+                          </div>
+                        )}
+
+                        <div style={{
+                          width:36, height:36, borderRadius:10,
+                          background: sel ? theme.accentBg : 'rgba(255,255,255,0.04)',
+                          display:'flex', alignItems:'center', justifyContent:'center',
+                          transition:'background 0.2s',
+                        }}>
+                          <PlanIcon size={16} color={sel ? theme.accent : '#475569'} />
+                        </div>
+
+                        <div style={{ fontSize:13, fontWeight:800, color: sel ? theme.accent : C.textPrimary }}>
+                          {plan.name}
+                        </div>
+
+                        <div style={{
+                          fontFamily:"'Orbitron',monospace",
+                          fontSize:12, fontWeight:900,
+                          color: sel ? theme.accent : '#fff',
+                        }}>
+                          {plan.price}
+                        </div>
+
+                        <div style={{ fontSize:11, color: sel ? theme.accent : '#64748b', fontWeight:600 }}>
+                          {fmtOrderData(plan.dataGB)}
+                        </div>
+
+                        <div style={{ fontSize:10, color:'#475569', lineHeight:1.5 }}>
+                          {plan.deviceLimit} devices · {plan.days}d
+                        </div>
+
+                        {sel && (
+                          <div style={{
+                            position:'absolute', bottom:8, right:8,
+                            width:16, height:16, borderRadius:'50%',
+                            background: theme.accent,
+                            display:'flex', alignItems:'center', justifyContent:'center',
+                          }}>
+                            <CheckCircle size={10} color="#000" strokeWidth={3} />
+                          </div>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+
+              {errors.selectedPlan && <p style={errStyle}><AlertCircle size={11} />{errors.selectedPlan}</p>}
             </div>
 
-            {/* Full Name */}
             <div style={{ marginBottom:22 }}>
               <label style={labelStyle}><User size={14} color={C.cyan} /> Full Name</label>
               <div style={{ position:'relative' }}>
@@ -1204,7 +1335,6 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
               {errors.name && <p style={errStyle}><AlertCircle size={11} />{errors.name}</p>}
             </div>
 
-            {/* WhatsApp Number */}
             <div style={{ marginBottom:32 }}>
               <label style={labelStyle}><Phone size={14} color={C.cyan} /> WhatsApp Number</label>
               <div style={{ position:'relative' }}>
@@ -1220,7 +1350,6 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
               {errors.whatsapp && <p style={errStyle}><AlertCircle size={11} />{errors.whatsapp}</p>}
             </div>
 
-            {/* Submit */}
             <button
               type="submit"
               style={{
@@ -1256,7 +1385,6 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
           </form>
         </div>
 
-        {/* Trust row */}
         <div style={{
           display:'flex', flexWrap:'wrap', justifyContent:'center', gap:28,
           marginTop:32, color:'#334155', fontSize:12,
