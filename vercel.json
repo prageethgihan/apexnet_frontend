@@ -4,8 +4,8 @@
   "framework": "vite",
   "rewrites": [
     {
-      "source": "/api/:path*",
-      "destination": "http://95.181.160.194:5000/api/:path*"
+      "source": "/api/(.*)",
+      "destination": "http://95.181.160.194:5000/api/$1"
     },
     {
       "source": "/(.*)",
