@@ -614,8 +614,98 @@ app.get('/api/vpn/server-stats', async (_req, res) => {
 })
 
 // =============================================================================
-// Start server
+// GET /api/vpn/client-by-name?name=Kamal+Perera
+// Looks up a customer's 3x-ui VPN client by matching their name in the remark
+// (3x-ui stores "email" as safeName_RAND which we can partially match).
+// Also accepts ?remark=kamal_perera_1234 for exact remark match.
+// Used by customer portal to display real device limit and usage stats.
 // =============================================================================
+app.get('/api/vpn/client-by-name', async (req, res) => {
+  const { name, remark } = req.query
+
+  if (!name && !remark) {
+    return res.status(400).json({ success: false, error: 'name or remark query param required' })
+  }
+
+  try {
+    await authenticate()
+    const inboundsRes = await panelCall('get', '/panel/api/inbounds/list')
+    if (!inboundsRes.data?.success) throw new Error('Panel error fetching inbound list.')
+
+    const inbounds = inboundsRes.data.obj || []
+
+    // Build a normalised search token from the name (matches the remark prefix)
+    const searchToken = remark
+      ? remark.toLowerCase()
+      : name.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '').substring(0, 12)
+
+    let foundClient    = null
+    let foundClientCfg = null // from inbound.settings.clients
+
+    outer:
+    for (const inbound of inbounds) {
+      // Parse client config from inbound settings (has limitIp, totalGB, etc.)
+      let cfgClients = []
+      try {
+        const settings = typeof inbound.settings === 'string'
+          ? JSON.parse(inbound.settings)
+          : (inbound.settings || {})
+        cfgClients = settings.clients || []
+      } catch (_) {}
+
+      for (const cs of (inbound.clientStats || [])) {
+        const csEmail = (cs.email || '').toLowerCase()
+        const isMatch = remark
+          ? csEmail === searchToken
+          : csEmail.startsWith(searchToken) || csEmail.includes(searchToken.split('_')[0])
+
+        if (isMatch) {
+          const expired = cs.expiryTime > 0 && cs.expiryTime < Date.now()
+          foundClient = {
+            email:      cs.email,
+            enable:     cs.enable,
+            expired,
+            expiryTime: cs.expiryTime,
+            up:         cs.up   || 0,
+            down:       cs.down || 0,
+          }
+          // Find matching config entry for device limit + data cap
+          foundClientCfg = cfgClients.find(c => c.email === cs.email) || null
+          break outer
+        }
+      }
+    }
+
+    if (!foundClient) {
+      return res.json({ success: true, found: false })
+    }
+
+    const toGB = (b) => (b / 1024 ** 3).toFixed(2)
+    const deviceLimit = foundClientCfg?.limitIp || 1
+    const totalGB     = foundClientCfg?.totalGB  || 0   // bytes; 0 = unlimited
+
+    return res.json({
+      success: true,
+      found:   true,
+      client: {
+        email:       foundClient.email,
+        active:      foundClient.enable && !foundClient.expired,
+        expired:     foundClient.expired,
+        expiryDate:  foundClient.expiryTime > 0
+          ? new Date(foundClient.expiryTime).toISOString().split('T')[0]
+          : null,
+        dataUsedGB:  toGB(foundClient.up + foundClient.down),
+        totalGB:     totalGB === 0 ? 0 : parseFloat(toGB(totalGB)),
+        deviceLimit,
+      },
+    })
+  } catch (err) {
+    console.error('[ApexNet] /api/vpn/client-by-name error:', err.message)
+    return res.status(500).json({ success: false, error: err.message })
+  }
+})
+
+
 app.listen(PORT, () => {
   const pad = (s, n) => String(s).substring(0, n).padEnd(n)
   console.log(`

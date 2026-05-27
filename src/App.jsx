@@ -185,6 +185,11 @@ function Navbar({ onLogin }) {
 }
 
 // ─── Authenticated Navbar & Modals ───────────────────────────────────────────
+// ─── Device limit plan map (device count by plan name) ───────────────────────
+const PLAN_DEVICE_MAP = {
+  'standard': 2, 'mvp lite': 1, 'vip': 5, 'mvp pro': 8,
+}
+
 function AuthenticatedNavbar({ user, onLogout }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -193,6 +198,11 @@ function AuthenticatedNavbar({ user, onLogout }) {
   const [showSupportModal, setShowSupportModal] = useState(false)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+
+  // ── Subscription state (loaded when devices modal opens) ──────────────────
+  const [subInfo,     setSubInfo]     = useState(null) // { planName, deviceLimit, expiryDate, status, dataUsedGB, totalGB, clientEmail }
+  const [subLoading,  setSubLoading]  = useState(false)
+  const [subError,    setSubError]    = useState(null)
 
   // Listen to active scroll state
   useEffect(() => {
@@ -215,18 +225,114 @@ function AuthenticatedNavbar({ user, onLogout }) {
     return () => window.removeEventListener('apexnet-open-devices', handleOpenDevices)
   }, [])
 
+  // Fetch subscription info when modal opens
+  useEffect(() => {
+    if (!showDevicesModal || !user) return
+    let cancelled = false
+
+    const fetchSubInfo = async () => {
+      setSubLoading(true)
+      setSubError(null)
+      setSubInfo(null)
+      try {
+        // Step 1: Query Firestore vpn_users for this user's email
+        const q = query(collection(db, 'vpn_users'), where('email', '==', user.email))
+        const snap = await getDocs(q)
+
+        let firestoreRecord = null
+        if (!snap.empty) {
+          const d = snap.docs[0].data()
+          firestoreRecord = {
+            planId:    d.planId    || null,
+            planLabel: d.planLabel || d.dataLimit || '',
+            name:      d.name      || user.displayName || '',
+            status:    d.status    || 'Active',
+            expiryDate: d.expiryDate || null,
+          }
+        } else {
+          // Also check pending_orders
+          const q2 = query(collection(db, 'pending_orders'), where('email', '==', user.email))
+          const snap2 = await getDocs(q2)
+          if (!snap2.empty) {
+            const d = snap2.docs[snap2.docs.length - 1].data()
+            firestoreRecord = {
+              planId:    d.planId    || null,
+              planLabel: d.planLabel || '',
+              name:      d.name      || user.displayName || '',
+              status:    'Pending',
+              expiryDate: null,
+            }
+          }
+        }
+
+        if (!firestoreRecord) {
+          if (!cancelled) setSubInfo({ found: false })
+          return
+        }
+
+        // Step 2: Get plan device limit from API
+        let deviceLimit = 1
+        let planName = firestoreRecord.planLabel || ''
+        try {
+          const plansRes = await fetch('/api/vpn/plans')
+          const plansJson = await plansRes.json()
+          if (plansJson.plans) {
+            const matchPlan = firestoreRecord.planId
+              ? plansJson.plans.find(p => p.id === firestoreRecord.planId)
+              : plansJson.plans.find(p => p.name.toLowerCase() === planName.split(' (')[0].toLowerCase())
+            if (matchPlan) {
+              deviceLimit = matchPlan.devices
+              planName    = matchPlan.name
+            } else {
+              // Fallback: derive from plan name string
+              const key = planName.toLowerCase().split(' (')[0].trim()
+              deviceLimit = PLAN_DEVICE_MAP[key] || 1
+            }
+          }
+        } catch (_) {
+          const key = planName.toLowerCase().split(' (')[0].trim()
+          deviceLimit = PLAN_DEVICE_MAP[key] || 1
+        }
+
+        // Step 3: Try to get real active connection count from panel
+        let panelClient = null
+        if (firestoreRecord.name) {
+          try {
+            const cr = await fetch(`/api/vpn/client-by-name?name=${encodeURIComponent(firestoreRecord.name)}`)
+            const cj = await cr.json()
+            if (cj.success && cj.found) panelClient = cj.client
+          } catch (_) {}
+        }
+
+        if (!cancelled) {
+          setSubInfo({
+            found:       true,
+            planName,
+            deviceLimit: panelClient?.deviceLimit || deviceLimit,
+            status:      firestoreRecord.status,
+            expiryDate:  firestoreRecord.expiryDate,
+            active:      panelClient?.active ?? (firestoreRecord.status === 'Active'),
+            dataUsedGB:  panelClient?.dataUsedGB || '0.00',
+            totalGB:     panelClient?.totalGB || 0,
+            clientEmail: panelClient?.email || null,
+          })
+        }
+      } catch (err) {
+        if (!cancelled) setSubError('Could not load subscription info.')
+      } finally {
+        if (!cancelled) setSubLoading(false)
+      }
+    }
+
+    fetchSubInfo()
+    return () => { cancelled = true }
+  }, [showDevicesModal, user])
+
   const handleResetDevices = () => {
-    // Show toast message
     window.dispatchEvent(new CustomEvent('apexnet-toast', {
-      detail: { message: 'All device configurations have been reset!', type: 'success' }
+      detail: { message: 'Contact support to reset your VPN configuration.', type: 'success' }
     }))
     setShowDevicesModal(false)
-  }
-
-  const handleDisconnectDevice = (deviceName) => {
-    window.dispatchEvent(new CustomEvent('apexnet-toast', {
-      detail: { message: `${deviceName} has been disconnected!`, type: 'success' }
-    }))
   }
 
   return (
@@ -498,129 +604,92 @@ function AuthenticatedNavbar({ user, onLogout }) {
               </p>
             </div>
 
-            {/* Status indicator */}
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '10px 14px', borderRadius: 12,
-              background: 'rgba(0,245,255,0.05)', border: '1px solid rgba(0,245,255,0.15)',
-              marginBottom: 20,
-            }}>
-              <Laptop size={16} color={C.cyan} />
-              <span style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>
-                1 / 3 Devices Active
-              </span>
+            {/* ── Loading state ── */}
+            {subLoading && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '16px', borderRadius: 12, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', marginBottom: 20 }}>
+                <div style={{ width: 16, height: 16, borderRadius: '50%', border: '2px solid rgba(0,245,255,0.2)', borderTop: `2px solid ${C.cyan}`, animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+                <span style={{ color: C.textMuted, fontSize: 12 }}>Loading your subscription info…</span>
+              </div>
+            )}
+
+            {/* ── Error state ── */}
+            {subError && !subLoading && (
+              <div style={{ padding: '12px 14px', borderRadius: 12, background: 'rgba(248,113,113,0.07)', border: '1px solid rgba(248,113,113,0.2)', marginBottom: 16, color: '#f87171', fontSize: 12 }}>
+                {subError}
+              </div>
+            )}
+
+            {/* ── No subscription found ── */}
+            {!subLoading && subInfo && !subInfo.found && (
+              <div style={{ padding: '16px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', marginBottom: 20, textAlign: 'center' }}>
+                <Server size={28} color={C.textDim} style={{ margin: '0 auto 10px', display: 'block' }} />
+                <div style={{ color: C.textPrimary, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>No VPN Account Found</div>
+                <div style={{ color: C.textMuted, fontSize: 11, lineHeight: 1.6 }}>Your email is not linked to a VPN subscription yet.<br/>Contact support via WhatsApp to get set up.</div>
+              </div>
+            )}
+
+            {/* ── Subscription info ── */}
+            {!subLoading && subInfo && subInfo.found && (
+              <>
+                {/* Plan & Device limit badge */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 12, background: 'rgba(0,245,255,0.05)', border: '1px solid rgba(0,245,255,0.15)', marginBottom: 14 }}>
+                  <Laptop size={16} color={C.cyan} />
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>
+                      {subInfo.planName || 'VPN Plan'}
+                    </span>
+                    <span style={{ fontSize: 11, color: C.textMuted, marginLeft: 8 }}>· Up to {subInfo.deviceLimit} device{subInfo.deviceLimit !== 1 ? 's' : ''}</span>
+                  </div>
+                  <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 999, background: subInfo.active ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)', border: `1px solid ${subInfo.active ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}`, color: subInfo.active ? '#4ade80' : '#f87171' }}>
+                    {subInfo.status || (subInfo.active ? 'Active' : 'Expired')}
+                  </span>
+                </div>
+
+                {/* Data usage */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
+                  <div style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ color: C.textDim, fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>Data Used</div>
+                    <div style={{ color: '#fff', fontWeight: 700, fontSize: 15 }}>{subInfo.dataUsedGB} GB</div>
+                    <div style={{ color: C.textMuted, fontSize: 10, marginTop: 2 }}>{subInfo.totalGB === 0 ? 'Unlimited Plan' : `of ${subInfo.totalGB} GB`}</div>
+                  </div>
+                  <div style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ color: C.textDim, fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>Expires</div>
+                    <div style={{ color: '#fff', fontWeight: 700, fontSize: 13 }}>{subInfo.expiryDate || '—'}</div>
+                    <div style={{ color: C.textMuted, fontSize: 10, marginTop: 2 }}>Subscription expiry</div>
+                  </div>
+                </div>
+
+                {/* Device enforcement note */}
+                <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(191,0,255,0.05)', border: '1px solid rgba(191,0,255,0.15)', marginBottom: 20, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <Shield size={13} color={C.purple} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span style={{ color: C.textMuted, fontSize: 11, lineHeight: 1.5 }}>
+                    Device limit of <strong style={{ color: C.purple }}>{subInfo.deviceLimit}</strong> is enforced by the VPN server. Connecting more devices will be automatically blocked.
+                  </span>
+                </div>
+              </>
+            )}
+
+            {/* ── Actions ── */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <button
+                onClick={() => {
+                  const msg = `Hello ApexNet LK! I need help with my VPN devices. My email: ${user.email}`
+                  window.open(`https://wa.me/94771234567?text=${encodeURIComponent(msg)}`, '_blank')
+                  setShowDevicesModal(false)
+                }}
+                style={{
+                  width: '100%', padding: '12px', borderRadius: 12,
+                  background: '#25d366', border: 'none', color: '#fff',
+                  fontFamily: "'Orbitron', monospace", fontSize: 11, fontWeight: 700,
+                  letterSpacing: 0.8, cursor: 'pointer', transition: 'all 0.2s',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                }}
+                onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 0 18px rgba(37,211,102,0.3)' }}
+                onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none' }}
+              >
+                <MessageCircle size={14} /> Contact Support
+              </button>
             </div>
-
-            {/* Device slots */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
-              {/* Windows PC */}
-              <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '12px 14px', borderRadius: 12,
-                background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <Laptop size={20} color={C.cyan} />
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>Windows PC</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ade80' }} />
-                      <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 600 }}>Active Now</span>
-                      <span style={{ color: C.textDim, fontSize: 10 }}>•</span>
-                      <span style={{ fontSize: 10, color: C.textMuted }}>103.242.22.41</span>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  onClick={() => handleDisconnectDevice('Windows PC')}
-                  style={{
-                    padding: '6px 12px', borderRadius: 8,
-                    background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)',
-                    color: '#f87171', fontSize: 11, fontWeight: 600, cursor: 'pointer',
-                    transition: 'all 0.2s',
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(248,113,113,0.15)' }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(248,113,113,0.08)' }}
-                >
-                  Disconnect
-                </button>
-              </div>
-
-              {/* iPhone 13 */}
-              <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '12px 14px', borderRadius: 12,
-                background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <Smartphone size={20} color={C.textMuted} />
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>iPhone 13</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                      <span style={{ fontSize: 10, color: C.textMuted }}>Last active: 2 hours ago</span>
-                      <span style={{ color: C.textDim, fontSize: 10 }}>•</span>
-                      <span style={{ fontSize: 10, color: C.textMuted }}>112.134.87.19</span>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  disabled
-                  style={{
-                    padding: '6px 12px', borderRadius: 8,
-                    background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
-                    color: C.textDim, fontSize: 11, fontWeight: 600, cursor: 'default',
-                  }}
-                >
-                  Inactive
-                </button>
-              </div>
-
-              {/* Android TV */}
-              <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '12px 14px', borderRadius: 12,
-                background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <Monitor size={20} color={C.textMuted} />
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>Android TV</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                      <span style={{ fontSize: 10, color: C.textMuted }}>Last active: Yesterday</span>
-                      <span style={{ color: C.textDim, fontSize: 10 }}>•</span>
-                      <span style={{ fontSize: 10, color: C.textMuted }}>124.43.20.198</span>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  disabled
-                  style={{
-                    padding: '6px 12px', borderRadius: 8,
-                    background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
-                    color: C.textDim, fontSize: 11, fontWeight: 600, cursor: 'default',
-                  }}
-                >
-                  Inactive
-                </button>
-              </div>
-            </div>
-
-            {/* Actions */}
-            <button
-              onClick={handleResetDevices}
-              style={{
-                width: '100%', padding: '12px', borderRadius: 12,
-                background: 'linear-gradient(135deg, rgba(191,0,255,0.15), rgba(0,245,255,0.15))',
-                border: '1px solid rgba(0,245,255,0.3)', color: C.cyan,
-                fontFamily: "'Orbitron', monospace", fontSize: 12, fontWeight: 700,
-                letterSpacing: 1, cursor: 'pointer', transition: 'all 0.2s',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              }}
-              onMouseEnter={e => { e.currentTarget.style.background = 'linear-gradient(135deg, rgba(191,0,255,0.22), rgba(0,245,255,0.22))' }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'linear-gradient(135deg, rgba(191,0,255,0.15), rgba(0,245,255,0.15))' }}
-            >
-              Reset All Configs
-            </button>
           </div>
         </div>
       )}
@@ -1745,12 +1814,49 @@ function CustomerDashboard({ user, onLogout, trialClaimed, onClaimTrial, trialLo
     }
   }
 
-  // Plans are fetched by PricingSection — CustomerDashboard shows plans for logged-in order flow
-  const premiumPlans = [
-    { id: 'standard', name: 'Standard',  limit: '150 GB',    price: '399', badge: null,   color: C.textMuted, badgeClr: null      },
-    { id: 'vip',      name: 'VIP',       limit: '300 GB',    price: '699', badge: 'HOT',  color: C.purple,    badgeClr: '#f97316' },
-    { id: 'mvp',      name: 'MVP',       limit: 'Unlimited', price: '949', badge: 'BEST', color: C.cyan,      badgeClr: '#bf00ff' },
-  ]
+  // ── Plans — fetched live from API ─────────────────────────────────────────
+  const [premiumPlans, setPremiumPlans] = useState([])
+  const [plansLoading, setPlansLoading] = useState(true)
+
+  useEffect(() => {
+    const fetchPlans = async () => {
+      try {
+        const res  = await fetch('/api/vpn/plans', { signal: AbortSignal.timeout(10_000) })
+        const json = await res.json()
+        if (json.plans && json.plans.length) {
+          setPremiumPlans(json.plans.map(p => ({
+            id:          p.id,
+            name:        p.name,
+            limit:       (p.data_gb === 0 || !p.data_gb) ? 'Unlimited' : `${p.data_gb} GB`,
+            price:       String(p.price_lkr),
+            badge:       p.badge || null,
+            badgeClr:    p.badge === 'HOT' ? '#f97316' : p.badge === 'BEST' ? '#bf00ff' : null,
+            accent_color: p.accent_color || 'cyan',
+            devices:     p.devices || 1,
+            validity_days: p.validity_days || 30,
+          })))
+        } else {
+          // Fallback to current correct plans
+          setPremiumPlans([
+            { id: 1, name: 'Standard', limit: '500 GB',    price: '399', badge: null,   badgeClr: null,      accent_color: 'cyan',   devices: 2, validity_days: 30 },
+            { id: 2, name: 'MVP Lite', limit: 'Unlimited', price: '499', badge: null,   badgeClr: null,      accent_color: 'green',  devices: 1, validity_days: 30 },
+            { id: 3, name: 'VIP',      limit: '800 GB',    price: '649', badge: 'HOT',  badgeClr: '#f97316', accent_color: 'orange', devices: 5, validity_days: 30 },
+            { id: 4, name: 'MVP Pro',  limit: 'Unlimited', price: '899', badge: 'BEST', badgeClr: '#bf00ff', accent_color: 'purple', devices: 8, validity_days: 30 },
+          ])
+        }
+      } catch {
+        setPremiumPlans([
+          { id: 1, name: 'Standard', limit: '500 GB',    price: '399', badge: null,   badgeClr: null,      accent_color: 'cyan',   devices: 2, validity_days: 30 },
+          { id: 2, name: 'MVP Lite', limit: 'Unlimited', price: '499', badge: null,   badgeClr: null,      accent_color: 'green',  devices: 1, validity_days: 30 },
+          { id: 3, name: 'VIP',      limit: '800 GB',    price: '649', badge: 'HOT',  badgeClr: '#f97316', accent_color: 'orange', devices: 5, validity_days: 30 },
+          { id: 4, name: 'MVP Pro',  limit: 'Unlimited', price: '899', badge: 'BEST', badgeClr: '#bf00ff', accent_color: 'purple', devices: 8, validity_days: 30 },
+        ])
+      } finally {
+        setPlansLoading(false)
+      }
+    }
+    fetchPlans()
+  }, [])
 
   return (
     <div style={{ minHeight: '100vh', background: C.bg, position: 'relative', overflow: 'hidden' }}>
@@ -1889,109 +1995,113 @@ function CustomerDashboard({ user, onLogout, trialClaimed, onClaimTrial, trialLo
             Upgrade To <span style={{ background: 'linear-gradient(90deg, #00f5d4, #bf00ff)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>Premium Plan</span>
           </h3>
 
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-            gap: 20,
-          }}>
-            {premiumPlans.map((plan, i) => {
-              const isPopular = plan.badge === 'HOT'
-              return (
-                <div
-                  key={i}
-                  style={{
-                    background: 'rgba(7,17,28,0.85)',
-                    backdropFilter: 'blur(20px)',
-                    border: `1px solid ${isPopular ? 'rgba(191,0,255,0.25)' : 'rgba(0,245,255,0.08)'}`,
-                    borderRadius: 20, padding: 24,
-                    display: 'flex', flexDirection: 'column', gap: 16,
-                    position: 'relative',
-                    transition: 'all 0.3s ease',
-                    boxShadow: isPopular ? '0 0 30px rgba(191,0,255,0.06)' : 'none',
-                  }}
-                  onMouseEnter={e => {
-                    e.currentTarget.style.transform = 'translateY(-4px)'
-                    e.currentTarget.style.borderColor = isPopular ? 'rgba(191,0,255,0.45)' : 'rgba(0,245,255,0.25)'
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.transform = 'translateY(0)'
-                    e.currentTarget.style.borderColor = isPopular ? 'rgba(191,0,255,0.25)' : 'rgba(0,245,255,0.08)'
-                  }}
-                >
-                  {plan.badge && (
-                    <span style={{
-                      position: 'absolute', top: 12, right: 12,
-                      fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999,
-                      background: `${plan.badgeClr}22`, color: plan.badgeClr,
-                      border: `1px solid ${plan.badgeClr}55`,
-                      letterSpacing: 1,
-                    }}>{plan.badge}</span>
-                  )}
-                  
-                  <div>
-                    <h4 style={{ color: C.textMuted, fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{plan.name}</h4>
-                    <div style={{ color: '#fff', fontSize: 28, fontWeight: 800, fontFamily: "'Orbitron', monospace", marginTop: 8 }}>{plan.limit}</div>
-                  </div>
+          {/* Loading skeletons */}
+          {plansLoading && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 20 }}>
+              {[0,1,2,3].map(i => (
+                <div key={i} style={{ background: 'rgba(7,17,28,0.7)', borderRadius: 20, padding: 24, border: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: 16, animation: 'pulse 1.8s ease-in-out infinite' }}>
+                  <div style={{ height: 12, width: '55%', borderRadius: 6, background: 'rgba(255,255,255,0.06)' }} />
+                  <div style={{ height: 28, width: '70%', borderRadius: 6, background: 'rgba(255,255,255,0.07)' }} />
+                  <div style={{ height: 18, width: '45%', borderRadius: 6, background: 'rgba(255,255,255,0.05)' }} />
+                  <div style={{ height: 40, borderRadius: 12, background: 'rgba(255,255,255,0.04)', marginTop: 8 }} />
+                </div>
+              ))}
+            </div>
+          )}
 
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-                    <span style={{ color: C.cyan, fontSize: 20, fontWeight: 700 }}>LKR {plan.price}</span>
-                    <span style={{ color: C.textDim, fontSize: 12 }}>/ month</span>
-                  </div>
-
-                  {/* Plan features */}
-                  <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <CheckCircle size={12} color={C.cyan} /> High-Speed Nodes
-                    </li>
-                    <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <CheckCircle size={12} color={C.cyan} /> AES-256 Encryption
-                    </li>
-                    <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <CheckCircle size={12} color={C.cyan} /> WhatsApp Support
-                    </li>
-                  </ul>
-
-                  <button
-                    onClick={() => handleOrderPremium(plan)}
-                    disabled={orderingPack !== null}
+          {!plansLoading && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 20 }}>
+              {premiumPlans.map((plan, i) => {
+                const theme   = getOrderTheme(plan.accent_color || 'cyan')
+                const isPopular = !!plan.badge
+                return (
+                  <div
+                    key={plan.id || i}
                     style={{
-                      width: '100%', padding: '12px', borderRadius: 12,
-                      background: isPopular
-                        ? 'linear-gradient(135deg, rgba(191,0,255,0.15), rgba(0,245,255,0.15))'
-                        : 'rgba(255,255,255,0.03)',
-                      border: `1px solid ${isPopular ? 'rgba(191,0,255,0.3)' : 'rgba(255,255,255,0.08)'}`,
-                      color: isPopular ? C.purple : C.textPrimary,
-                      fontFamily: "'Orbitron', monospace", fontSize: 11, fontWeight: 700,
-                      letterSpacing: 1, cursor: 'pointer', transition: 'all 0.2s',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                      background: 'rgba(7,17,28,0.85)',
+                      backdropFilter: 'blur(20px)',
+                      border: `1px solid ${isPopular ? theme.accentBorder : 'rgba(0,245,255,0.08)'}`,
+                      borderRadius: 20, padding: 24,
+                      display: 'flex', flexDirection: 'column', gap: 16,
+                      position: 'relative',
+                      transition: 'all 0.3s ease',
+                      boxShadow: isPopular ? `0 0 30px ${theme.glow}` : 'none',
                     }}
                     onMouseEnter={e => {
-                      e.currentTarget.style.background = isPopular
-                        ? 'linear-gradient(135deg, rgba(191,0,255,0.22), rgba(0,245,255,0.22))'
-                        : 'rgba(255,255,255,0.08)'
+                      e.currentTarget.style.transform = 'translateY(-4px)'
+                      e.currentTarget.style.borderColor = theme.accentBorder
+                      e.currentTarget.style.boxShadow = `0 0 30px ${theme.glow}`
                     }}
                     onMouseLeave={e => {
-                      e.currentTarget.style.background = isPopular
-                        ? 'linear-gradient(135deg, rgba(191,0,255,0.15), rgba(0,245,255,0.15))'
-                        : 'rgba(255,255,255,0.03)'
+                      e.currentTarget.style.transform = 'translateY(0)'
+                      e.currentTarget.style.borderColor = isPopular ? theme.accentBorder : 'rgba(0,245,255,0.08)'
+                      e.currentTarget.style.boxShadow = isPopular ? `0 0 30px ${theme.glow}` : 'none'
                     }}
                   >
-                    {orderingPack === plan.name ? (
-                      <div style={{
-                        width: 14, height: 14, borderRadius: '50%',
-                        border: '2px solid rgba(255,255,255,0.2)',
-                        borderTop: `2px solid ${isPopular ? C.purple : C.cyan}`,
-                        animation: 'spin 0.8s linear infinite',
-                      }} />
-                    ) : (
-                      <MessageCircle size={14} />
+                    {plan.badge && (
+                      <span style={{
+                        position: 'absolute', top: 12, right: 12,
+                        fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999,
+                        background: `${plan.badgeClr}22`, color: plan.badgeClr,
+                        border: `1px solid ${plan.badgeClr}55`, letterSpacing: 1,
+                      }}>{plan.badge}</span>
                     )}
-                    Order Now
-                  </button>
-                </div>
-              )
-            })}
-          </div>
+
+                    <div>
+                      <h4 style={{ color: C.textMuted, fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{plan.name}</h4>
+                      <div style={{ color: theme.accent, fontSize: 28, fontWeight: 800, fontFamily: "'Orbitron', monospace", marginTop: 8 }}>{plan.limit}</div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                      <span style={{ color: theme.accent, fontSize: 20, fontWeight: 700, fontFamily: "'Orbitron', monospace" }}>LKR {plan.price}</span>
+                      <span style={{ color: C.textDim, fontSize: 12 }}>/ {plan.validity_days || 30} days</span>
+                    </div>
+
+                    <ul style={{ listStyle: 'none', padding: 0, margin: '4px 0 auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <CheckCircle size={12} color={theme.accent} /> {plan.limit} Data
+                      </li>
+                      <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <CheckCircle size={12} color={theme.accent} /> {plan.devices} Simultaneous Device{plan.devices !== 1 ? 's' : ''}
+                      </li>
+                      <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <CheckCircle size={12} color={theme.accent} /> AES-256 Encryption
+                      </li>
+                      <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <CheckCircle size={12} color={theme.accent} /> WhatsApp Support
+                      </li>
+                    </ul>
+
+                    <button
+                      onClick={() => handleOrderPremium(plan)}
+                      disabled={orderingPack !== null}
+                      style={{
+                        width: '100%', padding: '12px', borderRadius: 12,
+                        background: isPopular
+                          ? `linear-gradient(135deg, ${theme.accentBg}, rgba(191,0,255,0.12))`
+                          : 'rgba(255,255,255,0.03)',
+                        border: `1px solid ${isPopular ? theme.accentBorder : 'rgba(255,255,255,0.08)'}`,
+                        color: isPopular ? theme.accent : C.textPrimary,
+                        fontFamily: "'Orbitron', monospace", fontSize: 11, fontWeight: 700,
+                        letterSpacing: 1, cursor: orderingPack ? 'not-allowed' : 'pointer', transition: 'all 0.2s',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                        opacity: orderingPack && orderingPack !== plan.name ? 0.6 : 1,
+                      }}
+                      onMouseEnter={e => { if (!orderingPack) e.currentTarget.style.background = isPopular ? `linear-gradient(135deg, ${theme.accentBg.replace('0.07', '0.16')}, rgba(191,0,255,0.18))` : 'rgba(255,255,255,0.08)' }}
+                      onMouseLeave={e => { e.currentTarget.style.background = isPopular ? `linear-gradient(135deg, ${theme.accentBg}, rgba(191,0,255,0.12))` : 'rgba(255,255,255,0.03)' }}
+                    >
+                      {orderingPack === plan.name ? (
+                        <div style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.2)', borderTop: `2px solid ${theme.accent}`, animation: 'spin 0.8s linear infinite' }} />
+                      ) : (
+                        <MessageCircle size={14} />
+                      )}
+                      Order Now
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
 
       </main>

@@ -4,7 +4,8 @@
 // ALL calls go to the Node.js backend — panel credentials never leave it.
 // =============================================================================
 
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+// Use VITE_API_URL if explicitly set (e.g. local dev), otherwise use '' (same-origin via Vercel proxy)
+const BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
 
 // ─── Generic fetch helper ─────────────────────────────────────────────────────
 async function apiFetch (path, options = {}) {
