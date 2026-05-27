@@ -499,6 +499,121 @@ app.get('/api/vpn/stats', async (_req, res) => {
 })
 
 // =============================================================================
+// GET /api/vpn/server-stats
+// Returns real-time server health: CPU %, memory %, active connections, uptime.
+// Tries multiple 3x-ui endpoints in order until one succeeds.
+// =============================================================================
+app.get('/api/vpn/server-stats', async (_req, res) => {
+  try {
+    await authenticate()
+
+    let cpu        = null
+    let mem        = null
+    let connections = null
+    let uptime     = null
+    let xrayState  = null
+    let source     = null
+
+    // ── Attempt 1: /server/status ─────────────────────────────────────────────
+    // Standard 3x-ui v2 endpoint (may be prefixed by panel sub-path).
+    // PANEL_BASE already includes the sub-path (e.g. /tzhkNcKGl1Ivgsc8s9).
+    try {
+      const r = await panelClient.get('/server/status')
+      const obj = r.data?.obj
+      if (obj) {
+        cpu    = typeof obj.cpu    === 'number' ? Math.round(obj.cpu)          : null
+        uptime = typeof obj.uptime === 'number' ? obj.uptime                   : null
+
+        if (obj.mem) {
+          const cur   = obj.mem.current ?? obj.mem.curr ?? null
+          const total = obj.mem.total   ?? null
+          if (cur !== null && total && total > 0) {
+            mem = Math.round((cur / total) * 100)
+          }
+        }
+
+        // xray state (running / stop)
+        xrayState = obj.xray?.state ?? null
+
+        console.log('[ApexNet] ✓ /server/status → CPU:', cpu, '% | Mem:', mem, '% | Uptime:', uptime, 's')
+        source = 'server/status'
+      }
+    } catch (e1) {
+      console.warn('[ApexNet] /server/status failed:', e1.message)
+    }
+
+    // ── Attempt 2: /xray/status ───────────────────────────────────────────────
+    // Fallback: xray process info (available in some panel versions).
+    if (cpu === null) {
+      try {
+        const r2 = await panelClient.get('/xray/status')
+        if (r2.data?.obj?.state) {
+          xrayState = r2.data.obj.state
+          console.log('[ApexNet] /xray/status → state:', xrayState)
+          source = 'xray/status'
+        }
+      } catch (e2) {
+        console.warn('[ApexNet] /xray/status failed:', e2.message)
+      }
+    }
+
+    // ── Attempt 3: derive connections from inbound list ───────────────────────
+    // Always attempt — gives us live client counts regardless of above.
+    try {
+      const inbRes = await panelCall('get', '/panel/api/inbounds/list')
+      if (inbRes.data?.success) {
+        const inbounds = inbRes.data.obj || []
+        let activeClients = 0
+        for (const inb of inbounds) {
+          for (const cs of (inb.clientStats || [])) {
+            const expired = cs.expiryTime > 0 && cs.expiryTime < Date.now()
+            if (cs.enable && !expired) activeClients++
+          }
+        }
+        connections = activeClients
+        console.log('[ApexNet] ✓ Inbound list → active connections:', connections)
+        if (!source) source = 'inbounds/list'
+      }
+    } catch (e3) {
+      console.warn('[ApexNet] inbound list for connections failed:', e3.message)
+    }
+
+    if (source === null) {
+      // All attempts failed
+      return res.status(503).json({
+        success: false,
+        error:   'Could not reach 3x-ui panel for server stats.',
+        cpu:     null,
+        mem:     null,
+        connections: null,
+        uptime:  null,
+      })
+    }
+
+    return res.json({
+      success:    true,
+      cpu,
+      mem,
+      connections,
+      uptime,
+      xrayState,
+      source,
+      fetchedAt:  new Date().toISOString(),
+    })
+  } catch (err) {
+    console.error('[ApexNet] /api/vpn/server-stats error:', err.message)
+    return res.status(500).json({
+      success: false,
+      error:   err.message || 'Internal server error while fetching server stats.',
+      cpu:     null,
+      mem:     null,
+      connections: null,
+      uptime:  null,
+    })
+  }
+})
+
+// =============================================================================
 // Start server
 // =============================================================================
 app.listen(PORT, () => {

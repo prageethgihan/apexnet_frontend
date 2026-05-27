@@ -1,24 +1,51 @@
+// =============================================================================
+// AdminLogin.jsx  —  Firebase Email/Password admin authentication
+// ApexNet LK · Admin Portal
+// =============================================================================
+// ⚠  All mock credentials (MOCK_USER, MOCK_PASS, localStorage checks) have
+//    been removed.  Authentication is handled exclusively by Firebase Auth.
+// =============================================================================
+
 import { useState, useMemo, useEffect } from 'react'
-import { Shield, User, Lock, Eye, EyeOff, AlertCircle, Cpu, Radio } from 'lucide-react'
+import { signInWithEmailAndPassword } from 'firebase/auth'
+import { auth } from '../firebase'
+import { Shield, Mail, Lock, Eye, EyeOff, AlertCircle, Cpu, Radio } from 'lucide-react'
 
-// ─── Mock credentials (replace with real auth in production) ─────────────────
-const MOCK_USER = 'admin'
-const MOCK_PASS = 'password123'
-
-// ─── Colour tokens (match existing site palette) ─────────────────────────────
+// ─── Colour tokens ─────────────────────────────────────────────────────────────
 const C = {
-  bg:      '#020408',
-  card:    '#07111c',
-  cyan:    '#00f5ff',
-  purple:  '#bf00ff',
-  red:     '#f87171',
-  border:  'rgba(0,245,255,0.15)',
-  text:    '#e2e8f0',
-  muted:   '#94a3b8',
-  dim:     '#475569',
+  bg:     '#020408',
+  card:   '#07111c',
+  cyan:   '#00f5ff',
+  purple: '#bf00ff',
+  red:    '#f87171',
+  border: 'rgba(0,245,255,0.15)',
+  text:   '#e2e8f0',
+  muted:  '#94a3b8',
+  dim:    '#475569',
 }
 
-// ─── Animated background particles ───────────────────────────────────────────
+// ─── Firebase error → friendly message map ─────────────────────────────────────
+function mapFirebaseError(code) {
+  switch (code) {
+    case 'auth/user-not-found':
+    case 'auth/invalid-credential':
+      return 'No admin account found with these credentials.'
+    case 'auth/wrong-password':
+      return 'Incorrect password. Please try again.'
+    case 'auth/invalid-email':
+      return 'Please enter a valid email address.'
+    case 'auth/too-many-requests':
+      return 'Too many failed attempts. Please try again later.'
+    case 'auth/user-disabled':
+      return 'This account has been disabled. Contact the system admin.'
+    case 'auth/network-request-failed':
+      return 'Network error. Check your connection and try again.'
+    default:
+      return 'Authentication failed. Please check your credentials.'
+  }
+}
+
+// ─── Animated background particles ────────────────────────────────────────────
 function LoginParticles() {
   const pts = useMemo(() =>
     Array.from({ length: 40 }, (_, i) => ({
@@ -49,7 +76,7 @@ function LoginParticles() {
   )
 }
 
-// ─── Scanning line animation overlay ─────────────────────────────────────────
+// ─── Scanning line overlay ─────────────────────────────────────────────────────
 function ScanLine() {
   return (
     <div style={{
@@ -66,23 +93,31 @@ function ScanLine() {
   )
 }
 
-// ─── Main AdminLogin Component ────────────────────────────────────────────────
-export default function AdminLogin({ onLogin }) {
-  const [form, setForm]       = useState({ username: '', password: '' })
+// ─── Main AdminLogin Component ─────────────────────────────────────────────────
+// No props needed — AdminRoute reacts to onAuthStateChanged automatically.
+export default function AdminLogin() {
+  const [form, setForm]         = useState({ email: '', password: '' })
   const [showPass, setShowPass] = useState(false)
-  const [error, setError]     = useState('')
-  const [loading, setLoading] = useState(false)
-  const [shake, setShake]     = useState(false)
-  const [focused, setFocused] = useState('')
+  const [error, setError]       = useState('')
+  const [loading, setLoading]   = useState(false)
+  const [shake, setShake]       = useState(false)
+  const [focused, setFocused]   = useState('')
+  const [mounted, setMounted]   = useState(false)
 
-  // Subtle entrance animation counter
-  const [mounted, setMounted] = useState(false)
   useEffect(() => { setTimeout(() => setMounted(true), 50) }, [])
+
+  const triggerShake = () => {
+    setShake(true)
+    setTimeout(() => setShake(false), 500)
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!form.username.trim() || !form.password.trim()) {
-      setError('Please enter both username and password.')
+    const email    = form.email.trim()
+    const password = form.password
+
+    if (!email || !password) {
+      setError('Please enter your email and password.')
       triggerShake()
       return
     }
@@ -90,26 +125,17 @@ export default function AdminLogin({ onLogin }) {
     setLoading(true)
     setError('')
 
-    // Simulate network latency for realism
-    await new Promise(r => setTimeout(r, 900))
-
-    const storedUser = localStorage.getItem('apexnet_admin_username') || 'admin'
-    const storedPass = localStorage.getItem('apexnet_admin_password') || 'password123'
-
-    if (form.username === storedUser && form.password === storedPass) {
-      localStorage.setItem('apexnet_isAuthenticated', 'true')
-      onLogin(true)
-    } else {
+    try {
+      // Firebase will persist the session; AdminRoute's onAuthStateChanged
+      // will fire and render AdminDashboard automatically.
+      await signInWithEmailAndPassword(auth, email, password)
+      // No need to call onLogin / setState — Firebase handles session.
+    } catch (err) {
       setLoading(false)
-      setError('Invalid credentials. Access denied.')
+      setError(mapFirebaseError(err.code))
       triggerShake()
       setForm(p => ({ ...p, password: '' }))
     }
-  }
-
-  const triggerShake = () => {
-    setShake(true)
-    setTimeout(() => setShake(false), 500)
   }
 
   const inputStyle = (field) => ({
@@ -200,7 +226,7 @@ export default function AdminLogin({ onLogin }) {
         }}>
           <ScanLine />
 
-          {/* Top corner accent */}
+          {/* Corner accents */}
           <div style={{
             position: 'absolute', top: 0, right: 0,
             width: 120, height: 120,
@@ -216,7 +242,7 @@ export default function AdminLogin({ onLogin }) {
 
           {/* Header */}
           <div style={{ textAlign: 'center', marginBottom: 36 }}>
-            {/* Logo / Icon */}
+            {/* Logo */}
             <div style={{
               width: 72, height: 72, borderRadius: 20,
               background: 'rgba(0,245,255,0.06)',
@@ -240,7 +266,7 @@ export default function AdminLogin({ onLogin }) {
               </div>
             </div>
 
-            {/* System badge */}
+            {/* Badge */}
             <div style={{
               display: 'inline-flex', alignItems: 'center', gap: 6,
               padding: '4px 12px', borderRadius: 999,
@@ -270,35 +296,35 @@ export default function AdminLogin({ onLogin }) {
               }}>LK</span>
             </h1>
             <p style={{ color: C.dim, fontSize: 13 }}>
-              Authentication required to proceed
+              Firebase Authentication required to proceed
             </p>
           </div>
 
           {/* Form */}
           <form onSubmit={handleSubmit} noValidate>
 
-            {/* Username */}
+            {/* Email */}
             <div style={{ marginBottom: 20 }}>
               <label style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 color: C.muted, fontSize: 12, fontWeight: 600,
                 marginBottom: 8, letterSpacing: 0.5, textTransform: 'uppercase',
               }}>
-                <User size={11} color={C.cyan} /> Username
+                <Mail size={11} color={C.cyan} /> Admin Email
               </label>
               <div style={{ position: 'relative' }}>
                 <input
-                  id="admin-username"
-                  type="text"
-                  placeholder="admin"
+                  id="admin-email"
+                  type="email"
+                  placeholder="admin@apexnetvpn.xyz"
                   autoComplete="username"
-                  value={form.username}
-                  onChange={e => { setForm(p => ({ ...p, username: e.target.value })); setError('') }}
-                  onFocus={() => setFocused('username')}
+                  value={form.email}
+                  onChange={e => { setForm(p => ({ ...p, email: e.target.value })); setError('') }}
+                  onFocus={() => setFocused('email')}
                   onBlur={() => setFocused('')}
-                  style={inputStyle('username')}
+                  style={inputStyle('email')}
                 />
-                <User size={15} color={focused === 'username' ? C.cyan : '#334155'}
+                <Mail size={15} color={focused === 'email' ? C.cyan : '#334155'}
                   style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', transition: 'color 0.3s' }} />
               </div>
             </div>
@@ -343,7 +369,7 @@ export default function AdminLogin({ onLogin }) {
               </div>
             </div>
 
-            {/* Error Message */}
+            {/* Error */}
             {error && (
               <div style={{
                 display: 'flex', alignItems: 'center', gap: 8,
@@ -357,7 +383,7 @@ export default function AdminLogin({ onLogin }) {
               </div>
             )}
 
-            {/* Submit Button */}
+            {/* Submit */}
             <button
               id="admin-login-btn"
               type="submit"
@@ -413,13 +439,13 @@ export default function AdminLogin({ onLogin }) {
             </button>
           </form>
 
-          {/* Footer note */}
+          {/* Footer */}
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
             marginTop: 24, color: C.dim, fontSize: 11,
           }}>
             <Radio size={10} color='rgba(0,245,255,0.3)' />
-            <span>Encrypted session · Authorized access only</span>
+            <span>Firebase secured · Authorized access only</span>
           </div>
         </div>
       </div>

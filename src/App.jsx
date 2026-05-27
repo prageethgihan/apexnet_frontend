@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
-import ProtectedRoute from './components/ProtectedRoute'
+import AdminRoute from './components/AdminRoute'
 import MyProfile from './pages/MyProfile'
 import { db, auth, googleProvider } from './firebase'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
@@ -2001,9 +2001,6 @@ function CustomerDashboard({ user, onLogout, trialClaimed, onClaimTrial, trialLo
 
 // ─── App (with routing) ──────────────────────────────────────────────────────
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(
-    () => localStorage.getItem('apexnet_isAuthenticated') === 'true'
-  )
 
   const [user, setUser] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
@@ -2209,12 +2206,7 @@ export default function App() {
         />
         <Route
           path="/admin-secure-panel"
-          element={
-            <ProtectedRoute
-              isAuthenticated={isAuthenticated}
-              onAuthChange={setIsAuthenticated}
-            />
-          }
+          element={<AdminRoute />}
         />
       </Routes>
 

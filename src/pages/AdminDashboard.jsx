@@ -9,11 +9,12 @@
 //   2. Create src/firebase/config.js with your project credentials
 //   3. Uncomment every line marked [FIREBASE] below
 //
-import { db } from '../firebase'
+import { db, auth } from '../firebase'
 import {
   collection, onSnapshot, addDoc, updateDoc,
   deleteDoc, doc, serverTimestamp
 } from 'firebase/firestore'
+import { signOut } from 'firebase/auth'
 // =============================================================================
 
 // ── 3x-ui Backend Integration ─────────────────────────────────────────────────
@@ -125,14 +126,6 @@ const INITIAL_ORDERS = [
   },
 ]
 
-// ─── Initial mock servers ─────────────────────────────────────────────────────
-const INITIAL_SERVERS = [
-  { id: 'sg-01', name: 'SG-Prime-01', region: 'Singapore',  load: 42, ping: '8ms',  status: 'Online',    activeUsers: 164 },
-  { id: 'jp-02', name: 'JP-Turbo-02', region: 'Tokyo',       load: 87, ping: '22ms', status: 'High Load', activeUsers: 89  },
-  { id: 'us-03', name: 'US-Core-03',  region: 'Los Angeles', load: 56, ping: '145ms',status: 'Online',    activeUsers: 72  },
-  { id: 'eu-04', name: 'EU-Nexus-04', region: 'Frankfurt',   load: 31, ping: '180ms',status: 'Online',    activeUsers: 38  },
-  { id: 'in-05', name: 'IN-Node-05',  region: 'Mumbai',      load: 89, ping: '18ms', status: 'High Load', activeUsers: 91  },
-]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const getDaysLeft  = (exp) => Math.ceil((new Date(exp) - new Date()) / 86400000)
@@ -606,9 +599,16 @@ function AddCustomerModal({ onClose, onAdd }) {
 }
 
 // ─── OverviewTab ──────────────────────────────────────────────────────────────
-function OverviewTab({ orders, servers, stats, onViewOrders, onAddCustomer, onExtend }) {
-  const recent       = useMemo(() => [...orders].sort((a, b) => b.id.localeCompare(a.id)).slice(0, 5), [orders])
-  const healthyCount = servers.filter(s => s.status === 'Online').length
+function OverviewTab({ orders, serverStats, serverStatsLoading, serverStatsError, stats, onViewOrders, onAddCustomer, onExtend }) {
+  const recent = useMemo(() => [...orders].sort((a, b) => b.id.localeCompare(a.id)).slice(0, 5), [orders])
+
+  // Determine server health indicator
+  const serverOnline = serverStats !== null
+  const serverStatus = serverStatsError
+    ? 'Error'
+    : serverStatsLoading && !serverStats
+      ? 'Loading'
+      : serverOnline ? 'Online' : 'Offline'
 
   return (
     <>
@@ -662,7 +662,7 @@ function OverviewTab({ orders, servers, stats, onViewOrders, onAddCustomer, onEx
           </div>
         </div>
 
-        {/* Server Fleet */}
+        {/* Server Fleet — Real-time 3x-ui Panel Data */}
         <div style={{ background: 'rgba(7,17,28,0.85)', backdropFilter: 'blur(20px)', border: '1px solid rgba(191,0,255,0.08)', borderRadius: 24, overflow: 'hidden' }}>
           <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -671,33 +671,93 @@ function OverviewTab({ orders, servers, stats, onViewOrders, onAddCustomer, onEx
               </div>
               <div>
                 <div style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>Server Fleet</div>
-                <div style={{ color: C.dim, fontSize: 11 }}>Global node status</div>
+                <div style={{ color: C.dim, fontSize: 11 }}>Live 3x-ui panel data</div>
               </div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#4ade80', fontWeight: 600 }}>
-              <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ade80', animation: 'pulse 2s infinite' }} />
-              {healthyCount}/{servers.length} Healthy
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 600,
+              color: serverStatus === 'Online' ? '#4ade80' : serverStatus === 'Error' ? C.red : C.muted }}>
+              <div style={{ width: 6, height: 6, borderRadius: '50%',
+                background: serverStatus === 'Online' ? '#4ade80' : serverStatus === 'Error' ? C.red : C.dim,
+                animation: serverStatus === 'Online' ? 'pulse 2s infinite' : 'none' }} />
+              {serverStatus}
             </div>
           </div>
-          <div>
-            {servers.map((srv, i) => (
-              <div key={srv.id} style={{ padding: '13px 24px', borderBottom: i < servers.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none', transition: 'background 0.2s' }}
-                onMouseEnter={e => e.currentTarget.style.background = 'rgba(191,0,255,0.02)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
-                      <span style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{srv.name}</span>
-                      <StatusBadge status={srv.status} />
+
+          {/* Loading skeleton */}
+          {serverStatsLoading && !serverStats && (
+            <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {[1, 2, 3].map(i => (
+                <div key={i} style={{ height: 18, borderRadius: 6, background: 'rgba(255,255,255,0.04)', animation: 'pulse 1.5s ease-in-out infinite' }} />
+              ))}
+            </div>
+          )}
+
+          {/* Error state */}
+          {serverStatsError && !serverStats && (
+            <div style={{ padding: '20px 24px', textAlign: 'center' }}>
+              <AlertCircle size={28} color={C.red} style={{ margin: '0 auto 10px', display: 'block', opacity: 0.6 }} />
+              <p style={{ color: C.dim, fontSize: 12 }}>Could not fetch panel data</p>
+              <p style={{ color: '#334155', fontSize: 11, marginTop: 4 }}>{serverStatsError}</p>
+            </div>
+          )}
+
+          {/* Real data */}
+          {serverStats && (
+            <div style={{ padding: '4px 0' }}>
+              {[
+                {
+                  label: 'CPU Usage',
+                  value: serverStats.cpu !== null ? `${serverStats.cpu}%` : '—',
+                  bar:   serverStats.cpu,
+                  icon:  <Cpu size={13} color={C.cyan} />,
+                  color: C.cyan,
+                },
+                {
+                  label: 'Memory Usage',
+                  value: serverStats.mem !== null ? `${serverStats.mem}%` : '—',
+                  bar:   serverStats.mem,
+                  icon:  <Activity size={13} color={C.purple} />,
+                  color: C.purple,
+                },
+                {
+                  label: 'Active Connections',
+                  value: serverStats.connections !== null ? String(serverStats.connections) : '—',
+                  bar:   null,
+                  icon:  <Wifi size={13} color={C.green} />,
+                  color: C.green,
+                },
+                {
+                  label: 'Xray Process',
+                  value: serverStats.xrayState ?? '—',
+                  bar:   null,
+                  icon:  <Radio size={13} color={C.orange} />,
+                  color: serverStats.xrayState === 'running' ? C.green : C.red,
+                },
+              ].map(({ label, value, bar, icon, color }, i) => (
+                <div key={i} style={{ padding: '13px 24px', borderBottom: i < 3 ? '1px solid rgba(255,255,255,0.04)' : 'none' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: bar !== null ? 7 : 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                      {icon}
+                      <span style={{ fontSize: 12, color: C.muted }}>{label}</span>
                     </div>
-                    <div style={{ fontSize: 11, color: C.dim }}>{srv.region} · {srv.ping} · {srv.activeUsers} users</div>
+                    <span style={{ fontSize: 12, color, fontWeight: 700 }}>{value}</span>
                   </div>
+                  {bar !== null && (
+                    <LoadBar value={bar ?? 0} />
+                  )}
                 </div>
-                <LoadBar value={srv.load} />
+              ))}
+
+              {/* Last fetch time */}
+              <div style={{ padding: '10px 24px', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+                <span style={{ fontSize: 10, color: '#334155' }}>
+                  Last synced: {serverStats.fetchedAt
+                    ? new Date(serverStats.fetchedAt).toLocaleTimeString()
+                    : '—'}
+                </span>
               </div>
-            ))}
-          </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -816,23 +876,54 @@ function OrdersTab({ orders, onExtend, onDelete, onAdd }) {
   )
 }
 
-// ─── ServersTab ───────────────────────────────────────────────────────────────
-function ServersTab({ servers }) {
-  const healthy   = servers.filter(s => s.status === 'Online').length
-  const totalUser = servers.reduce((sum, s) => sum + s.activeUsers, 0)
-  const avgLoad   = Math.round(servers.reduce((sum, s) => sum + s.load, 0) / servers.length)
+// ─── ServersTab — Real-time 3x-ui stats ──────────────────────────────────────
+function ServersTab({ serverStats, serverStatsLoading, serverStatsError, onRefresh }) {
+
+  // Format uptime seconds → human readable
+  const fmtUptime = (secs) => {
+    if (secs === null || secs === undefined) return '—'
+    const d = Math.floor(secs / 86400)
+    const h = Math.floor((secs % 86400) / 3600)
+    const m = Math.floor((secs % 3600) / 60)
+    if (d > 0) return `${d}d ${h}h ${m}m`
+    if (h > 0) return `${h}h ${m}m`
+    return `${m}m`
+  }
+
+  const cpuClr = !serverStats?.cpu ? C.muted
+    : serverStats.cpu >= 80 ? C.red
+    : serverStats.cpu >= 60 ? C.orange
+    : C.cyan
+
+  const memClr = !serverStats?.mem ? C.muted
+    : serverStats.mem >= 80 ? C.red
+    : serverStats.mem >= 60 ? C.orange
+    : C.purple
+
+  const miniStats = serverStats ? [
+    { label: 'CPU Load',      value: serverStats.cpu  !== null ? `${serverStats.cpu}%`  : '—', color: cpuClr },
+    { label: 'Memory',        value: serverStats.mem  !== null ? `${serverStats.mem}%`  : '—', color: memClr },
+    { label: 'Active Clients',value: serverStats.connections !== null ? serverStats.connections : '—', color: C.green },
+    { label: 'Uptime',        value: fmtUptime(serverStats.uptime), color: C.muted },
+    { label: 'Xray Status',   value: serverStats.xrayState ?? '—',
+      color: serverStats.xrayState === 'running' ? C.green : C.red },
+  ] : []
 
   return (
     <>
-      {/* Summary mini-stats */}
+      {/* Summary row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 12, marginBottom: 24 }}>
-        {[
-          { label: 'Total Nodes',  value: servers.length,               color: C.cyan   },
-          { label: 'Online',       value: healthy,                      color: C.green  },
-          { label: 'High Load',    value: servers.length - healthy,     color: C.orange },
-          { label: 'Active Users', value: totalUser,                    color: C.purple },
-          { label: 'Avg Load',     value: `${avgLoad}%`,                color: C.muted  },
-        ].map(({ label, value, color }, i) => (
+        {serverStatsLoading && !serverStats ? (
+          Array.from({ length: 5 }, (_, i) => (
+            <div key={i} style={{
+              background: 'rgba(7,17,28,0.85)', borderRadius: 16, padding: '20px 18px',
+              border: '1px solid rgba(255,255,255,0.06)',
+            }}>
+              <div style={{ height: 24, borderRadius: 6, background: 'rgba(255,255,255,0.04)', marginBottom: 8, animation: 'pulse 1.5s ease-in-out infinite' }} />
+              <div style={{ height: 12, borderRadius: 4, background: 'rgba(255,255,255,0.03)', width: '60%', animation: 'pulse 1.5s ease-in-out infinite' }} />
+            </div>
+          ))
+        ) : miniStats.map(({ label, value, color }, i) => (
           <div key={i} style={{
             background: 'rgba(7,17,28,0.85)', backdropFilter: 'blur(16px)',
             border: '1px solid rgba(255,255,255,0.06)', borderRadius: 16, padding: '16px 18px',
@@ -843,48 +934,93 @@ function ServersTab({ servers }) {
         ))}
       </div>
 
-      {/* Server cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))', gap: 16 }}>
-        {servers.map(srv => {
-          const isHigh = srv.status === 'High Load'
-          return (
-            <div key={srv.id} style={{
-              background: 'rgba(7,17,28,0.85)', backdropFilter: 'blur(20px)',
-              border: `1px solid ${isHigh ? 'rgba(249,115,22,0.18)' : 'rgba(255,255,255,0.06)'}`,
-              borderRadius: 20, padding: '22px', transition: 'all 0.3s',
-              boxShadow: isHigh ? '0 0 24px rgba(249,115,22,0.08)' : 'none',
+      {/* Main server card */}
+      {serverStatsError && !serverStats ? (
+        <div style={{
+          background: 'rgba(7,17,28,0.85)', backdropFilter: 'blur(20px)',
+          border: '1px solid rgba(248,113,113,0.15)', borderRadius: 20, padding: '48px',
+          textAlign: 'center',
+        }}>
+          <AlertCircle size={44} color="rgba(248,113,113,0.3)" style={{ margin: '0 auto 16px', display: 'block' }} />
+          <p style={{ color: C.red, fontSize: 14, fontWeight: 700, marginBottom: 6 }}>Could not reach the panel</p>
+          <p style={{ color: C.dim, fontSize: 12, marginBottom: 20 }}>{serverStatsError}</p>
+          <button
+            onClick={onRefresh}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 18px', borderRadius: 10,
+              background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.25)',
+              color: C.red, fontSize: 13, fontWeight: 700, cursor: 'pointer',
             }}
-              onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.borderColor = isHigh ? 'rgba(249,115,22,0.35)' : 'rgba(0,245,255,0.18)' }}
-              onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.borderColor = isHigh ? 'rgba(249,115,22,0.18)' : 'rgba(255,255,255,0.06)' }}
-            >
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
-                <div>
-                  <div style={{ fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, color: '#fff', marginBottom: 4 }}>{srv.name}</div>
-                  <div style={{ fontSize: 12, color: C.dim }}>{srv.region}</div>
-                </div>
-                <StatusBadge status={srv.status} />
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
-                {[
-                  { label: 'Ping',         value: srv.ping },
-                  { label: 'Active Users', value: srv.activeUsers },
-                ].map(({ label, value }, i) => (
-                  <div key={i} style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '10px 12px' }}>
-                    <div style={{ color: C.muted, fontSize: 10, marginBottom: 4 }}>{label}</div>
-                    <div style={{ color: '#fff', fontSize: 15, fontWeight: 700 }}>{value}</div>
-                  </div>
-                ))}
-              </div>
+          >
+            <RefreshCw size={13} /> Retry
+          </button>
+        </div>
+      ) : serverStats ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))', gap: 16 }}>
+          {/* VPS Node Card */}
+          <div style={{
+            background: 'rgba(7,17,28,0.85)', backdropFilter: 'blur(20px)',
+            border: '1px solid rgba(0,245,255,0.15)',
+            borderRadius: 20, padding: '22px', transition: 'all 0.3s',
+            boxShadow: '0 0 24px rgba(0,245,255,0.06)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                  <span style={{ fontSize: 11, color: C.muted }}>CPU / Load</span>
+                <div style={{ fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, color: '#fff', marginBottom: 4 }}>VPS-MAIN-01</div>
+                <div style={{ fontSize: 12, color: C.dim }}>95.181.160.194 · Inbound #{import.meta.env.VITE_INBOUND_ID || 1}</div>
+              </div>
+              <StatusBadge status={serverStats.xrayState === 'running' ? 'Online' : 'Offline'} />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
+              {[
+                { label: 'Active Clients', value: serverStats.connections ?? '—' },
+                { label: 'Uptime',         value: fmtUptime(serverStats.uptime) },
+              ].map(({ label, value }, i) => (
+                <div key={i} style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '10px 12px' }}>
+                  <div style={{ color: C.muted, fontSize: 10, marginBottom: 4 }}>{label}</div>
+                  <div style={{ color: '#fff', fontSize: 15, fontWeight: 700 }}>{value}</div>
                 </div>
-                <LoadBar value={srv.load} />
+              ))}
+            </div>
+
+            {/* CPU bar */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ fontSize: 11, color: C.muted }}>CPU / Load</span>
+              </div>
+              <LoadBar value={serverStats.cpu ?? 0} />
+            </div>
+
+            {/* Memory bar */}
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ fontSize: 11, color: C.muted }}>Memory</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ flex: 1, height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.05)', overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%', width: `${serverStats.mem ?? 0}%`, borderRadius: 999,
+                    background: `linear-gradient(90deg,${memClr}88,${memClr})`,
+                    boxShadow: `0 0 8px ${memClr}55`, transition: 'width 1s ease',
+                  }} />
+                </div>
+                <span style={{ fontSize: 11, color: memClr, fontWeight: 700, width: 34, textAlign: 'right' }}>
+                  {serverStats.mem !== null ? `${serverStats.mem}%` : '—'}
+                </span>
               </div>
             </div>
-          )
-        })}
-      </div>
+
+            {/* Source + timestamp */}
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 10, color: '#334155' }}>Source: {serverStats.source ?? '—'}</span>
+              <span style={{ fontSize: 10, color: '#334155' }}>
+                {serverStats.fetchedAt ? new Date(serverStats.fetchedAt).toLocaleTimeString() : '—'}
+              </span>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   )
 }
@@ -983,14 +1119,16 @@ function AdminCredentialsModal({ onClose, onShowToast }) {
 
   const validate = () => {
     const e = {}
-    const activePass = localStorage.getItem('apexnet_admin_password') || 'password123'
     if (!form.currentPassword) {
       e.currentPassword = 'Current password is required.'
-    } else if (form.currentPassword !== activePass) {
-      e.currentPassword = 'Incorrect current password.'
+    } else {
+      // Password validation is now handled by Firebase Auth.
+      // To change your password, use the Firebase Console or the
+      // Firebase updatePassword() API.
+      e.currentPassword = 'Password changes are managed via Firebase Console. See Settings for guidance.'
     }
     if (!form.newUsername.trim()) {
-      e.newUsername = 'New username is required.'
+      e.newUsername = 'New display name is required.'
     }
     if (!form.newPassword) {
       e.newPassword = 'New password is required.'
@@ -1432,11 +1570,10 @@ function FirebaseConfigurationModal({ onClose, onShowToast }) {
 }
 
 // ─── Main AdminDashboard ──────────────────────────────────────────────────────
-export default function AdminDashboard({ onLogout }) {
+export default function AdminDashboard() {
 
   // ── State ───────────────────────────────────────────────────────────────────
   const [orders,            setOrders]            = useState([])
-  const [servers,           setServers]           = useState(INITIAL_SERVERS)
   const [activeTab,         setActiveTab]         = useState('overview')
   const [showLogoutModal,   setShowLogoutModal]   = useState(false)
   const [showAddModal,      setShowAddModal]      = useState(false)
@@ -1446,13 +1583,45 @@ export default function AdminDashboard({ onLogout }) {
   const [showFirebaseModal, setShowFirebaseModal] = useState(false)
   const [toast,             setToast]             = useState(null)
 
-  // ── 3x-ui Live Stats (auto-refreshes every 60 s) ────────────────────────────
+  // ── Real-time server stats from 3x-ui panel ─────────────────────────────────
+  const [serverStats,        setServerStats]       = useState(null)
+  const [serverStatsLoading, setServerStatsLoading] = useState(false)
+  const [serverStatsError,   setServerStatsError]  = useState(null)
+
+  // ── 3x-ui Live Panel Stats (client counts / bandwidth) ─────────────────────
   const {
     stats:   panelStats,
     loading: panelLoading,
     error:   panelError,
     refresh: refreshPanel,
   } = useVpnStats({ pollInterval: 60_000, fetchOnMount: true })
+
+  // ── 3x-ui Server System Stats (CPU / RAM / uptime) ──────────────────────────
+  const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+
+  const fetchServerStats = useCallback(async () => {
+    setServerStatsLoading(true)
+    setServerStatsError(null)
+    try {
+      const res = await fetch(`${API_BASE}/api/vpn/server-stats`)
+      const json = await res.json()
+      if (json.success) {
+        setServerStats(json)
+      } else {
+        setServerStatsError(json.error || 'Panel returned an error.')
+      }
+    } catch (err) {
+      setServerStatsError(err.message || 'Failed to fetch server stats.')
+    } finally {
+      setServerStatsLoading(false)
+    }
+  }, [API_BASE])
+
+  useEffect(() => {
+    fetchServerStats()
+    const interval = setInterval(fetchServerStats, 60_000)
+    return () => clearInterval(interval)
+  }, [fetchServerStats])
 
   const [prices, setPrices] = useState(() => {
     const stored = localStorage.getItem('apexnet_prices')
@@ -1599,34 +1768,38 @@ export default function AdminDashboard({ onLogout }) {
   const stats = useMemo(() => {
     const active  = orders.filter(o => ['Active', 'Trial'].includes(o.status))
     const revenue = active.reduce((sum, o) => sum + (prices[o.dataLimit] ?? 0), 0)
-    const onlineSrv = servers.filter(s => s.status === 'Online').length
-    const uptimePct = ((onlineSrv / servers.length) * 100).toFixed(2)
 
     // Prefer live panel counts when available; fall back to Firestore counts.
     const totalCust   = panelStats ? panelStats.totalCustomers    : orders.length
     const activeSess  = panelStats ? panelStats.activeSessions    : active.length
-    const serverUsage = panelStats ? `${panelStats.totalServerUsageGB} GB` : `${uptimePct}%`
+    const serverUsage = panelStats ? `${panelStats.totalServerUsageGB} GB` : '—'
 
     return [
       { label: 'Total Customers',   value: totalCust,             delta: '+12%',  up: true,  Icon: Users,       color: C.cyan,    glow: 'rgba(0,245,255,0.15)' },
       { label: 'Active Sessions',   value: activeSess,            delta: '+8%',   up: true,  Icon: Wifi,        color: C.purple,  glow: 'rgba(191,0,255,0.15)' },
       { label: 'Monthly Revenue',   value: fmtRevenue(revenue),   delta: '+23%',  up: true,  Icon: TrendingUp,  color: '#4ade80', glow: 'rgba(74,222,128,0.15)' },
       {
-        label: panelStats ? 'Total Server Usage' : 'Server Uptime',
+        label: panelStats ? 'Total Server Usage' : 'Server Usage',
         value: serverUsage,
-        delta: panelStats ? `↑${panelStats.uploadGB}GB  ↓${panelStats.downloadGB}GB` : '-0.01%',
+        delta: panelStats ? `↑${panelStats.uploadGB}GB  ↓${panelStats.downloadGB}GB` : '—',
         up: true,
         Icon: Server,
         color: C.orange,
         glow: 'rgba(249,115,22,0.15)',
       },
     ]
-  }, [orders, servers, prices, panelStats])
+  }, [orders, prices, panelStats])
 
-  // ── Logout ──────────────────────────────────────────────────────────────────
-  const handleLogout = () => {
-    localStorage.removeItem('apexnet_isAuthenticated')
-    onLogout(false)
+  // ── Logout (Firebase signOut) ────────────────────────────────────────────────
+  const handleLogout = async () => {
+    try {
+      await signOut(auth)
+      // AdminRoute's onAuthStateChanged will fire and show AdminLogin
+    } catch (err) {
+      console.error('[AdminDashboard] signOut error:', err)
+      showToast('Logout failed. Please try again.', 'error')
+      setShowLogoutModal(false)
+    }
   }
 
   const NAV = [
@@ -1735,7 +1908,7 @@ export default function AdminDashboard({ onLogout }) {
 
             {/* Refresh — also refreshes panel stats */}
             <button
-              onClick={() => { showToast('Refreshing live data…', 'success'); refreshPanel() }}
+              onClick={() => { showToast('Refreshing live data…', 'success'); refreshPanel(); fetchServerStats() }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 7, padding: '9px 16px', borderRadius: 10,
                 background: 'rgba(0,245,255,0.06)', border: '1px solid rgba(0,245,255,0.18)',
@@ -1764,7 +1937,11 @@ export default function AdminDashboard({ onLogout }) {
         {/* ── Tab content ── */}
         {activeTab === 'overview' && (
           <OverviewTab
-            orders={orders} servers={servers} stats={stats}
+            orders={orders}
+            serverStats={serverStats}
+            serverStatsLoading={serverStatsLoading}
+            serverStatsError={serverStatsError}
+            stats={stats}
             onViewOrders={() => setActiveTab('orders')}
             onAddCustomer={() => setShowAddModal(true)}
             onExtend={extendOrder}
@@ -1779,7 +1956,14 @@ export default function AdminDashboard({ onLogout }) {
           />
         )}
         {activeTab === 'plans'   && <ManagePlans showToast={showToast} />}
-        {activeTab === 'servers'  && <ServersTab  servers={servers} />}
+        {activeTab === 'servers'  && (
+          <ServersTab
+            serverStats={serverStats}
+            serverStatsLoading={serverStatsLoading}
+            serverStatsError={serverStatsError}
+            onRefresh={fetchServerStats}
+          />
+        )}
         {activeTab === 'settings' && (
           <SettingsTab
             onOpenCreds={() => setShowCredsModal(true)}
