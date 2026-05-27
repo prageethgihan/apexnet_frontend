@@ -20,8 +20,9 @@ import {
 } from 'lucide-react'
 
 // ─── Backend base URL ─────────────────────────────────────────────────────────
-// Set VITE_API_URL on Vercel to  http://95.181.160.194:5000
-// During local dev the Vite proxy forwards /api/* to localhost:5000 automatically.
+// DO NOT set VITE_API_URL on Vercel — it must be empty so all /api/* requests
+// go through Vercel's reverse-proxy rewrite (vercel.json) to the VPS over HTTPS.
+// During local dev the Vite proxy (vite.config.js) forwards /api/* to localhost:5000.
 const BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
 
 // ─── ISP packages + their SNI (bug host) ─────────────────────────────────────
