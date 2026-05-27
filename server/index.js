@@ -13,10 +13,12 @@
 
 'use strict'
 
-const express  = require('express')
-const axios    = require('axios')
-const cors     = require('cors')
-const https    = require('https')
+const express    = require('express')
+const axios      = require('axios')
+const cors       = require('cors')
+const https      = require('https')
+const path       = require('path')
+const Database   = require('better-sqlite3')
 const { v4: uuidv4 } = require('uuid')
 require('dotenv').config()
 
@@ -45,30 +47,71 @@ const {
 
 const PANEL_BASE = PANEL_URL.replace(/\/$/, '') // strip trailing slash
 
-// ─── Pricing Plans ────────────────────────────────────────────────────────────
-// planId must exactly match what the frontend sends in the `plan` field.
-const PLANS = {
-  standard: {
-    name:        'Standard',
-    priceLKR:    399,
-    dataLimitGB: 150,   // 150 GB cap
-    deviceLimit: 2,     // limitIp in 3x-ui
-    expiryDays:  30,
-  },
-  vip: {
-    name:        'VIP',
-    priceLKR:    699,
-    dataLimitGB: 300,   // 300 GB cap
-    deviceLimit: 5,
-    expiryDays:  30,
-  },
-  mvp: {
-    name:        'MVP',
-    priceLKR:    949,
-    dataLimitGB: 0,     // 0 = unlimited in 3x-ui
-    deviceLimit: 8,
-    expiryDays:  30,
-  },
+// =============================================================================
+// SQLite Database — Plans
+// =============================================================================
+const DB_PATH = path.join(__dirname, 'plans.db')
+const db = new Database(DB_PATH)
+
+// WAL mode = much better concurrent read performance
+db.pragma('journal_mode = WAL')
+db.pragma('foreign_keys = ON')
+
+// Create plans table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS plans (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL,
+    data_gb       INTEGER NOT NULL DEFAULT 0,
+    devices       INTEGER NOT NULL DEFAULT 1,
+    price_lkr     INTEGER NOT NULL,
+    validity_days INTEGER NOT NULL DEFAULT 30,
+    is_active     INTEGER NOT NULL DEFAULT 1,
+    badge         TEXT    DEFAULT NULL,
+    accent_color  TEXT    NOT NULL DEFAULT 'cyan',
+    created_at    TEXT    DEFAULT (datetime('now')),
+    updated_at    TEXT    DEFAULT (datetime('now'))
+  )
+`)
+
+// Seed default plans on first boot (only if table is empty)
+const planCount = db.prepare('SELECT COUNT(*) AS cnt FROM plans').get()
+if (planCount.cnt === 0) {
+  const insert = db.prepare(`
+    INSERT INTO plans (name, data_gb, devices, price_lkr, validity_days, is_active, badge, accent_color)
+    VALUES (@name, @data_gb, @devices, @price_lkr, @validity_days, @is_active, @badge, @accent_color)
+  `)
+  const seedAll = db.transaction((rows) => { for (const r of rows) insert.run(r) })
+  seedAll([
+    { name: 'Standard', data_gb: 500, devices: 2, price_lkr: 399, validity_days: 30, is_active: 1, badge: null,   accent_color: 'cyan'   },
+    { name: 'MVP Lite', data_gb: 0,   devices: 1, price_lkr: 499, validity_days: 30, is_active: 1, badge: null,   accent_color: 'green'  },
+    { name: 'VIP',      data_gb: 800, devices: 5, price_lkr: 649, validity_days: 30, is_active: 1, badge: 'HOT',  accent_color: 'orange' },
+    { name: 'MVP Pro',  data_gb: 0,   devices: 8, price_lkr: 899, validity_days: 30, is_active: 1, badge: 'BEST', accent_color: 'purple' },
+  ])
+  console.log('[ApexNet] ✓ Seeded 4 default plans into SQLite.')
+} else {
+  console.log(`[ApexNet] ✓ SQLite ready — ${planCount.cnt} plan(s) loaded.`)
+}
+
+// Prepared statements (compiled once, reused)
+const stmt = {
+  getActivePlans:  db.prepare('SELECT id, name, data_gb, devices, price_lkr, validity_days, badge, accent_color FROM plans WHERE is_active = 1 ORDER BY price_lkr ASC'),
+  getAllPlans:      db.prepare('SELECT * FROM plans ORDER BY price_lkr ASC'),
+  getPlanById:     db.prepare('SELECT * FROM plans WHERE id = ?'),
+  insertPlan:      db.prepare(`
+    INSERT INTO plans (name, data_gb, devices, price_lkr, validity_days, is_active, badge, accent_color)
+    VALUES (@name, @data_gb, @devices, @price_lkr, @validity_days, @is_active, @badge, @accent_color)
+  `),
+  updatePlan: db.prepare(`
+    UPDATE plans
+    SET name = @name, data_gb = @data_gb, devices = @devices,
+        price_lkr = @price_lkr, validity_days = @validity_days,
+        is_active = @is_active, badge = @badge, accent_color = @accent_color,
+        updated_at = datetime('now')
+    WHERE id = @id
+  `),
+  deletePlan: db.prepare('DELETE FROM plans WHERE id = ?'),
+  getActivePlanByName: db.prepare("SELECT * FROM plans WHERE LOWER(name) = LOWER(?) AND is_active = 1 LIMIT 1"),
 }
 
 // ─── ISP Package → SNI (Bug Host) mapping ────────────────────────────────────
@@ -144,29 +187,117 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin)) return cb(null, true)
     cb(new Error(`CORS: origin "${origin}" not allowed`))
   },
-  methods:        ['GET', 'POST', 'OPTIONS'],
+  methods:        ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials:    true,
 }))
 
 app.use(express.json())
 
-// ─── Health check ────────────────────────────────────────────────────────────
+// ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
+  const plans = stmt.getAllPlans.all()
   res.json({
     status:    'ok',
     service:   'ApexNet LK Backend',
     timestamp: new Date().toISOString(),
-    plans:     Object.keys(PLANS),
+    planCount: plans.length,
   })
 })
 
-// ─── GET /api/vpn/plans  — expose plan list to frontend ──────────────────────
+// =============================================================================
+// PUBLIC: GET /api/vpn/plans
+// Returns only active plans, sorted by price ascending.
+// Used by: landing page PricingSection, OrderForm, CreateVpnModal.
+// =============================================================================
 app.get('/api/vpn/plans', (_req, res) => {
-  res.json({
-    success: true,
-    plans:   Object.entries(PLANS).map(([id, p]) => ({ id, ...p })),
-  })
+  const plans = stmt.getActivePlans.all()
+  res.json({ success: true, plans })
+})
+
+// =============================================================================
+// ADMIN: GET /api/admin/plans — all plans including inactive
+// =============================================================================
+app.get('/api/admin/plans', (_req, res) => {
+  const plans = stmt.getAllPlans.all()
+  res.json({ success: true, plans })
+})
+
+// =============================================================================
+// ADMIN: POST /api/admin/plans — create a new plan
+// =============================================================================
+app.post('/api/admin/plans', (req, res) => {
+  const { name, data_gb, devices, price_lkr, validity_days, badge, accent_color, is_active } = req.body
+
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'name is required.' })
+  }
+  if (price_lkr == null || isNaN(Number(price_lkr))) {
+    return res.status(400).json({ error: 'price_lkr is required and must be a number.' })
+  }
+
+  try {
+    const result = stmt.insertPlan.run({
+      name:          name.trim(),
+      data_gb:       Number(data_gb) || 0,
+      devices:       Math.max(1, Number(devices) || 1),
+      price_lkr:     Number(price_lkr),
+      validity_days: Number(validity_days) || 30,
+      is_active:     is_active !== false && is_active !== 0 ? 1 : 0,
+      badge:         badge ? String(badge).toUpperCase() : null,
+      accent_color:  accent_color || 'cyan',
+    })
+    res.json({ success: true, id: result.lastInsertRowid })
+  } catch (err) {
+    console.error('[ApexNet] POST /api/admin/plans:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// =============================================================================
+// ADMIN: PUT /api/admin/plans/:id — update existing plan
+// =============================================================================
+app.put('/api/admin/plans/:id', (req, res) => {
+  const id   = Number(req.params.id)
+  const plan = stmt.getPlanById.get(id)
+  if (!plan) return res.status(404).json({ error: `Plan #${id} not found.` })
+
+  const { name, data_gb, devices, price_lkr, validity_days, badge, accent_color, is_active } = req.body
+
+  try {
+    stmt.updatePlan.run({
+      id,
+      name:          name         != null ? String(name).trim()                 : plan.name,
+      data_gb:       data_gb      != null ? Number(data_gb)                     : plan.data_gb,
+      devices:       devices      != null ? Math.max(1, Number(devices))        : plan.devices,
+      price_lkr:     price_lkr   != null ? Number(price_lkr)                   : plan.price_lkr,
+      validity_days: validity_days != null ? Number(validity_days)              : plan.validity_days,
+      is_active:     is_active    != null ? (is_active ? 1 : 0)                 : plan.is_active,
+      badge:         badge        !== undefined ? (badge ? String(badge).toUpperCase() : null) : plan.badge,
+      accent_color:  accent_color != null ? String(accent_color)                : plan.accent_color,
+    })
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[ApexNet] PUT /api/admin/plans/:id:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// =============================================================================
+// ADMIN: DELETE /api/admin/plans/:id — hard delete
+// =============================================================================
+app.delete('/api/admin/plans/:id', (req, res) => {
+  const id   = Number(req.params.id)
+  const plan = stmt.getPlanById.get(id)
+  if (!plan) return res.status(404).json({ error: `Plan #${id} not found.` })
+
+  try {
+    stmt.deletePlan.run(id)
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[ApexNet] DELETE /api/admin/plans/:id:', err.message)
+    res.status(500).json({ error: err.message })
+  }
 })
 
 // =============================================================================
@@ -174,72 +305,84 @@ app.get('/api/vpn/plans', (_req, res) => {
 // =============================================================================
 // Request body:
 //   customerName    : string  — e.g. "Kamal Perera"
-//   selectedPackage : string  — one of SNI_MAP keys  e.g. "Dialog Router Zoom 724"
-//   plan            : string  — "standard" | "vip" | "mvp"
+//   selectedPackage : string  — one of SNI_MAP keys
+//   planId          : number  — integer plan id from DB  (preferred)
+//   plan / selectedPlan : string  — legacy: plan name fallback (still works)
 //
 // Response (success):
 //   { success, vlessUrl, clientId, remark, sni,
-//     plan: { id, name, priceLKR, dataLimitGB, deviceLimit, expiryDays },
+//     plan: { id, name, price_lkr, data_gb, devices, validity_days },
 //     dataLimitLabel, expiryDate }
 // =============================================================================
 app.post('/api/vpn/create', async (req, res) => {
   try {
-    // Accept both `plan` and `selectedPlan` field names (frontend may send either)
-    const { customerName, selectedPackage, plan: planField, selectedPlan } = req.body
-    const planId = planField ?? selectedPlan
+    const { customerName, selectedPackage, planId, plan: planField, selectedPlan } = req.body
 
-    // ── 1. Validate ───────────────────────────────────────────────────────
+    // ── 1. Validate customer name ──────────────────────────────────────────
     if (!customerName || typeof customerName !== 'string' || !customerName.trim()) {
       return res.status(400).json({ error: 'customerName is required.' })
     }
 
+    // ── 2. Validate ISP package ────────────────────────────────────────────
     if (!selectedPackage || !SNI_MAP[selectedPackage]) {
       return res.status(400).json({
         error: `Invalid selectedPackage. Valid options: ${Object.keys(SNI_MAP).join(', ')}`,
       })
     }
 
-    const plan = PLANS[String(planId).toLowerCase()]
-    if (!plan) {
-      return res.status(400).json({
-        error: `Invalid plan. Valid options: ${Object.keys(PLANS).join(', ')}`,
-      })
+    // ── 3. Resolve plan from DB ────────────────────────────────────────────
+    let plan = null
+
+    if (planId != null && !isNaN(Number(planId))) {
+      // New preferred path: integer planId
+      plan = stmt.getPlanById.get(Number(planId))
+      if (!plan || !plan.is_active) {
+        return res.status(400).json({ error: `Plan #${planId} not found or is inactive.` })
+      }
+    } else {
+      // Legacy path: string plan name (backward compat)
+      const nameKey = String(planField ?? selectedPlan ?? '').trim()
+      if (!nameKey) {
+        return res.status(400).json({ error: 'planId (integer) or plan name is required.' })
+      }
+      plan = stmt.getActivePlanByName.get(nameKey)
+      if (!plan) {
+        return res.status(400).json({
+          error: `No active plan named "${nameKey}". Use planId instead.`,
+        })
+      }
     }
 
     const name = customerName.trim()
     const sni  = SNI_MAP[selectedPackage]
 
-    // ── 2. Compute data cap (bytes) + expiry ──────────────────────────────
+    // ── 4. Compute data cap (bytes) + expiry ──────────────────────────────
     // 3x-ui stores traffic limits in bytes; 0 means unlimited.
-    const totalBytes = plan.dataLimitGB === 0
-      ? 0
-      : plan.dataLimitGB * 1024 * 1024 * 1024
+    const totalBytes     = plan.data_gb === 0 ? 0 : plan.data_gb * 1024 * 1024 * 1024
+    const expiryMs       = Date.now() + plan.validity_days * 24 * 60 * 60 * 1000
+    const expiryDate     = new Date(expiryMs).toISOString().split('T')[0]
+    const dataLimitLabel = plan.data_gb === 0 ? 'Unlimited' : `${plan.data_gb} GB`
 
-    const expiryMs   = Date.now() + plan.expiryDays * 24 * 60 * 60 * 1000
-    const expiryDate = new Date(expiryMs).toISOString().split('T')[0]
-    const dataLimitLabel = plan.dataLimitGB === 0 ? 'Unlimited' : `${plan.dataLimitGB} GB`
-
-    // ── 3. Build unique remark / email ───────────────────────────────────
+    // ── 5. Build unique remark / email ────────────────────────────────────
     const rand4    = Math.floor(1000 + Math.random() * 9000)
     const safeName = name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '')
     const remark   = `${safeName}_${rand4}`
-    const email    = remark.toLowerCase() // 3x-ui uses "email" as the unique client key
+    const email    = remark.toLowerCase() // 3x-ui uses "email" as unique client key
 
-    // ── 4. Generate UUID ─────────────────────────────────────────────────
+    // ── 6. Generate UUID ──────────────────────────────────────────────────
     const clientId = uuidv4()
 
-    // ── 5. Authenticate with 3x-ui ───────────────────────────────────────
+    // ── 7. Authenticate with 3x-ui ────────────────────────────────────────
     await authenticate()
 
-    // ── 6. Add client via /panel/api/inbounds/addClient ───────────────────
-    // `limitIp` = concurrent device limit (0 = no limit, but we set plan limit)
+    // ── 8. Add client via /panel/api/inbounds/addClient ───────────────────
     const clientSettings = {
       clients: [
         {
           id:         clientId,
           alterId:    0,
           email,
-          limitIp:    plan.deviceLimit,
+          limitIp:    plan.devices,
           totalGB:    totalBytes,
           expiryTime: expiryMs,
           enable:     true,
@@ -252,7 +395,7 @@ app.post('/api/vpn/create', async (req, res) => {
 
     console.log(
       `[ApexNet] → Adding "${email}" | inbound #${INBOUND_ID}` +
-      ` | ${plan.name} | ${dataLimitLabel} | ${plan.deviceLimit} devices | exp ${expiryDate}`
+      ` | ${plan.name} | ${dataLimitLabel} | ${plan.devices} devices | exp ${expiryDate}`
     )
 
     const panelRes = await panelCall('post', '/panel/api/inbounds/addClient', {
@@ -265,7 +408,7 @@ app.post('/api/vpn/create', async (req, res) => {
       throw new Error(panelRes.data?.msg || 'Panel rejected the client creation request.')
     }
 
-    // ── 7. Build VLESS URL (TCP, no TLS, SNI injection for NetMod) ────────
+    // ── 9. Build VLESS URL (TCP, no TLS, SNI injection for NetMod) ────────
     // Format that works with NetMod Senza on Sri Lankan ISPs:
     //   vless://UUID@SERVER_IP:PORT?type=tcp&security=none&sni=SNI_HOST#Remark
     const urlRemark = encodeURIComponent(`ApexNet - ${name} - ${plan.name}`)
@@ -278,7 +421,7 @@ app.post('/api/vpn/create', async (req, res) => {
       `&encryption=none` +
       `#${urlRemark}`
 
-    // ── 8. Respond ────────────────────────────────────────────────────────
+    // ── 10. Respond ───────────────────────────────────────────────────────
     return res.json({
       success: true,
       vlessUrl,
@@ -286,12 +429,14 @@ app.post('/api/vpn/create', async (req, res) => {
       remark,
       sni,
       plan: {
-        id:          String(planId).toLowerCase(),
-        name:        plan.name,
-        priceLKR:    plan.priceLKR,
-        dataLimitGB: plan.dataLimitGB,
-        deviceLimit: plan.deviceLimit,
-        expiryDays:  plan.expiryDays,
+        id:           plan.id,
+        name:         plan.name,
+        price_lkr:    plan.price_lkr,
+        data_gb:      plan.data_gb,
+        devices:      plan.devices,
+        validity_days: plan.validity_days,
+        accent_color: plan.accent_color,
+        badge:        plan.badge,
       },
       dataLimitLabel,
       expiryDate,
@@ -362,10 +507,11 @@ app.listen(PORT, () => {
 ╔══════════════════════════════════════════════════════════╗
 ║            ApexNet LK — Backend Server                   ║
 ╠══════════════════════════════════════════════════════════╣
-║  Port      →  ${pad(PORT,      40)} ║
-║  Panel     →  ${pad(PANEL_BASE,40)} ║
-║  Server IP →  ${pad(SERVER_IP, 40)} ║
+║  Port      →  ${pad(PORT,       40)} ║
+║  Panel     →  ${pad(PANEL_BASE, 40)} ║
+║  Server IP →  ${pad(SERVER_IP,  40)} ║
 ║  CORS      →  ${pad(CORS_ORIGIN,40)} ║
+║  DB        →  ${pad(DB_PATH,    40)} ║
 ╚══════════════════════════════════════════════════════════╝
   `)
 })

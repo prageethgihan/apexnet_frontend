@@ -36,26 +36,20 @@ const ISP_PACKAGES = [
   { value: 'Airtel Unlimited',          label: 'Airtel — Unlimited' },
 ]
 
-// ─── ORDER FORM: Plan theme config (mirrors CreateVpnModal themes) ─────────────
-const ORDER_PLAN_THEME = {
-  standard: {
-    accent: '#00f5ff', accentBg: 'rgba(0,245,255,0.07)', accentBorder: 'rgba(0,245,255,0.38)',
-    glow: 'rgba(0,245,255,0.18)', badge: null, badgeClr: null, Icon: Wifi,
-  },
-  vip: {
-    accent: '#f97316', accentBg: 'rgba(249,115,22,0.07)', accentBorder: 'rgba(249,115,22,0.38)',
-    glow: 'rgba(249,115,22,0.18)', badge: 'HOT', badgeClr: '#f97316', Icon: Zap,
-  },
-  mvp: {
-    accent: '#bf00ff', accentBg: 'rgba(191,0,255,0.07)', accentBorder: 'rgba(191,0,255,0.38)',
-    glow: 'rgba(191,0,255,0.18)', badge: 'BEST', badgeClr: '#bf00ff', Icon: Globe,
-  },
+// ─── ORDER FORM: Accent colour map (keyed by plan.accent_color from DB) ─────────────
+const ACCENT_MAP = {
+  cyan:   { Icon: Wifi,   accent: '#00f5ff', accentBg: 'rgba(0,245,255,0.07)',  accentBorder: 'rgba(0,245,255,0.38)',  glow: 'rgba(0,245,255,0.18)'  },
+  orange: { Icon: Zap,    accent: '#f97316', accentBg: 'rgba(249,115,22,0.07)', accentBorder: 'rgba(249,115,22,0.38)', glow: 'rgba(249,115,22,0.18)' },
+  purple: { Icon: Globe,  accent: '#bf00ff', accentBg: 'rgba(191,0,255,0.07)',  accentBorder: 'rgba(191,0,255,0.38)',  glow: 'rgba(191,0,255,0.18)'  },
+  green:  { Icon: Shield, accent: '#4ade80', accentBg: 'rgba(74,222,128,0.07)', accentBorder: 'rgba(74,222,128,0.38)', glow: 'rgba(74,222,128,0.18)' },
 }
+const getOrderTheme = (ac) => ACCENT_MAP[ac] || ACCENT_MAP.cyan
 
 const ORDER_FALLBACK_PLANS = [
-  { id: 'standard', name: 'Standard', price: '399 LKR', dataGB: 150, deviceLimit: 2, days: 30 },
-  { id: 'vip',      name: 'VIP',      price: '699 LKR', dataGB: 300, deviceLimit: 5, days: 30 },
-  { id: 'mvp',      name: 'MVP',      price: '949 LKR', dataGB: 0,   deviceLimit: 8, days: 30 },
+  { id: 1, name: 'Standard', price_lkr: 399, data_gb: 500, devices: 2, validity_days: 30, badge: null,   accent_color: 'cyan'   },
+  { id: 2, name: 'MVP Lite', price_lkr: 499, data_gb: 0,   devices: 1, validity_days: 30, badge: null,   accent_color: 'green'  },
+  { id: 3, name: 'VIP',      price_lkr: 649, data_gb: 800, devices: 5, validity_days: 30, badge: 'HOT',  accent_color: 'orange' },
+  { id: 4, name: 'MVP Pro',  price_lkr: 899, data_gb: 0,   devices: 8, validity_days: 30, badge: 'BEST', accent_color: 'purple' },
 ]
 
 const ORDER_API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
@@ -980,7 +974,7 @@ function FeatureCards() {
 
 // ─── Order Form ──────────────────────────────────────────────────────────────
 function OrderForm({ selectedLimit, setSelectedLimit }) {
-  const [form, setForm]    = useState({ isp: '', selectedPlan: 'vip', name: '', whatsapp: '' })
+  const [form, setForm]    = useState({ isp: '', selectedPlan: null, name: '', whatsapp: '' })
   const [errors, setErrs]  = useState({})
   const [sent, setSent]    = useState(false)
   const [toast, setToast]  = useState(null)
@@ -998,32 +992,46 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
 
         let list = []
         if (Array.isArray(json.plans)) {
+          // New SQLite backend — snake_case
           list = json.plans.map(p => ({
-            id:          p.id,
-            name:        p.name,
-            price:       p.priceLKR ? `${p.priceLKR} LKR` : (p.price ?? '—'),
-            dataGB:      p.dataLimitGB ?? p.dataGB ?? 0,
-            deviceLimit: p.deviceLimit,
-            days:        p.expiryDays ?? p.days ?? 30,
+            id:            p.id,
+            name:          p.name,
+            price_lkr:     p.price_lkr     ?? p.priceLKR   ?? 0,
+            data_gb:       p.data_gb       ?? p.dataGB     ?? p.dataLimitGB ?? 0,
+            devices:       p.devices       ?? p.deviceLimit ?? 1,
+            validity_days: p.validity_days ?? p.expiryDays ?? p.days ?? 30,
+            badge:         p.badge         ?? null,
+            accent_color:  p.accent_color  ?? 'cyan',
           }))
         } else if (typeof json === 'object' && json !== null) {
+          // Legacy keyed-object
           const SKIP = new Set(['success', 'message', 'error', 'plans'])
+          let idx = 1
           list = Object.entries(json)
             .filter(([k]) => !SKIP.has(k))
-            .map(([id, p]) => ({
-              id,
-              name:        p.name ?? id,
-              price:       p.price ?? (p.priceLKR ? `${p.priceLKR} LKR` : '—'),
-              dataGB:      p.dataGB ?? p.dataLimitGB ?? 0,
-              deviceLimit: p.deviceLimit ?? 2,
-              days:        p.days ?? p.expiryDays ?? 30,
+            .map(([key, p]) => ({
+              id:            p.id            ?? idx++,
+              name:          p.name          ?? key,
+              price_lkr:     p.price_lkr     ?? p.priceLKR   ?? 0,
+              data_gb:       p.data_gb       ?? p.dataGB     ?? p.dataLimitGB ?? 0,
+              devices:       p.devices       ?? p.deviceLimit ?? 1,
+              validity_days: p.validity_days ?? p.expiryDays ?? p.days ?? 30,
+              badge:         p.badge         ?? null,
+              accent_color:  p.accent_color  ?? 'cyan',
             }))
         }
-        setPlans(list.length ? list : ORDER_FALLBACK_PLANS)
+        const finalList = list.length ? list : ORDER_FALLBACK_PLANS
+        setPlans(finalList)
         setPlansState('ok')
+        // Auto-select HOT/badged plan on load
+        const hot = finalList.find(p => p.badge)
+        const mid = finalList[Math.floor(finalList.length / 2)]
+        setForm(prev => ({ ...prev, selectedPlan: (hot ?? mid ?? finalList[0]).id }))
       } catch {
         setPlans(ORDER_FALLBACK_PLANS)
         setPlansState('ok')
+        const hotFb = ORDER_FALLBACK_PLANS.find(p => p.badge)
+        setForm(prev => ({ ...prev, selectedPlan: (hotFb ?? ORDER_FALLBACK_PLANS[0]).id }))
       }
     }
     fetchPlans()
@@ -1031,7 +1039,7 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
 
   useEffect(() => {
     if (selectedLimit && plans.length) {
-      const match = plans.find(p => p.id === selectedLimit)
+      const match = plans.find(p => String(p.id) === String(selectedLimit) || p.name?.toLowerCase() === String(selectedLimit).toLowerCase())
       if (match) setForm(prev => ({ ...prev, selectedPlan: match.id }))
     }
   }, [selectedLimit, plans])
@@ -1065,15 +1073,18 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
     setSent(true)
 
     const activePlan = plans.find(p => p.id === form.selectedPlan)
-    const planLabel  = activePlan ? `${activePlan.name} (${activePlan.price})` : form.selectedPlan
+    const planLabel  = activePlan
+      ? `${activePlan.name} (LKR ${activePlan.price_lkr})`
+      : String(form.selectedPlan)
 
     try {
       await addDoc(collection(db, 'pending_orders'), {
         name:         form.name.trim(),
         whatsapp:     form.whatsapp.trim(),
         package:      form.isp,
-        selectedPlan: form.selectedPlan,
+        planId:       form.selectedPlan,
         planLabel,
+        price_lkr:    activePlan?.price_lkr ?? null,
         status:       'Pending',
         timestamp:    serverTimestamp()
       })
@@ -1119,7 +1130,8 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
     color:'#f87171', fontSize:11, marginTop:6,
   }
 
-  const fmtOrderData = (gb) => gb >= 1000 ? 'Unlimited' : `${gb} GB`
+
+
 
   return (
     <section id="order" style={{ padding:'80px 24px 60px', position:'relative' }}>
@@ -1230,12 +1242,12 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
               {plansState === 'ok' && (
                 <div style={{
                   display:'grid',
-                  gridTemplateColumns:'repeat(3,1fr)',
+                  gridTemplateColumns:`repeat(${Math.min(plans.length, 4)},1fr)`,
                   gap:12,
                 }}>
                   {plans.map(plan => {
-                    const theme = ORDER_PLAN_THEME[plan.id] || ORDER_PLAN_THEME.standard
-                    const { Icon: PlanIcon } = theme
+                    const theme = getOrderTheme(plan.accent_color)
+                    const PlanIcon = theme.Icon
                     const sel = form.selectedPlan === plan.id
                     return (
                       <button
@@ -1260,15 +1272,15 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
                         onMouseEnter={e => { if (!sel) { e.currentTarget.style.borderColor = theme.accentBorder; e.currentTarget.style.transform = 'translateY(-1px)' }}}
                         onMouseLeave={e => { if (!sel) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.07)'; e.currentTarget.style.transform = 'translateY(0)' }}}
                       >
-                        {theme.badge && (
+                        {plan.badge && (
                           <div style={{
                             position:'absolute', top:-9, left:'50%', transform:'translateX(-50%)',
-                            background: theme.badgeClr, color:'#fff',
+                            background: theme.accent, color:'#fff',
                             fontSize:8, fontWeight:900, padding:'2px 8px', borderRadius:999,
                             letterSpacing:0.8, whiteSpace:'nowrap',
-                            boxShadow: `0 0 10px ${theme.badgeClr}88`,
+                            boxShadow: `0 0 10px ${theme.accent}88`,
                           }}>
-                            {theme.badge}
+                            {plan.badge}
                           </div>
                         )}
 
@@ -1290,15 +1302,15 @@ function OrderForm({ selectedLimit, setSelectedLimit }) {
                           fontSize:12, fontWeight:900,
                           color: sel ? theme.accent : '#fff',
                         }}>
-                          {plan.price}
+                          LKR {plan.price_lkr}
                         </div>
 
                         <div style={{ fontSize:11, color: sel ? theme.accent : '#64748b', fontWeight:600 }}>
-                          {fmtOrderData(plan.dataGB)}
+                          {fmtOrderData(plan.data_gb)}
                         </div>
 
                         <div style={{ fontSize:10, color:'#475569', lineHeight:1.5 }}>
-                          {plan.deviceLimit} devices · {plan.days}d
+                          {plan.devices} devices · {plan.validity_days}d
                         </div>
 
                         {sel && (
@@ -1483,25 +1495,32 @@ function PricingSection({ onSelectPlan }) {
 
         let list = []
         if (Array.isArray(json.plans)) {
+          // New SQLite backend — snake_case fields
           list = json.plans.map(p => ({
-            id:          p.id,
-            name:        p.name,
-            price:       p.priceLKR ?? p.price,
-            dataLabel:   p.dataLimitGB === 0 ? 'Unlimited' : `${p.dataLimitGB ?? p.dataGB} GB`,
-            deviceLimit: p.deviceLimit,
-            days:        p.expiryDays ?? p.days ?? 30,
+            id:            p.id,
+            name:          p.name,
+            price_lkr:     p.price_lkr     ?? p.priceLKR   ?? 0,
+            data_gb:       p.data_gb       ?? p.dataGB     ?? p.dataLimitGB ?? 0,
+            devices:       p.devices       ?? p.deviceLimit ?? 1,
+            validity_days: p.validity_days ?? p.expiryDays ?? p.days ?? 30,
+            badge:         p.badge         ?? null,
+            accent_color:  p.accent_color  ?? 'cyan',
           }))
         } else if (typeof json === 'object' && json !== null) {
+          // Legacy keyed-object
           const SKIP = new Set(['success', 'message', 'error', 'plans'])
+          let idx = 1
           list = Object.entries(json)
             .filter(([k]) => !SKIP.has(k))
-            .map(([id, p]) => ({
-              id,
-              name:        p.name ?? id,
-              price:       p.priceLKR ?? (typeof p.price === 'string' ? parseInt(p.price) : p.price),
-              dataLabel:   (p.dataGB === 0 || p.dataLimitGB === 0) ? 'Unlimited' : `${p.dataLimitGB ?? p.dataGB} GB`,
-              deviceLimit: p.deviceLimit ?? 2,
-              days:        p.days ?? p.expiryDays ?? 30,
+            .map(([key, p]) => ({
+              id:            p.id            ?? idx++,
+              name:          p.name          ?? key,
+              price_lkr:     p.price_lkr     ?? p.priceLKR   ?? 0,
+              data_gb:       p.data_gb       ?? p.dataGB     ?? p.dataLimitGB ?? 0,
+              devices:       p.devices       ?? p.deviceLimit ?? 1,
+              validity_days: p.validity_days ?? p.expiryDays ?? p.days ?? 30,
+              badge:         p.badge         ?? null,
+              accent_color:  p.accent_color  ?? 'cyan',
             }))
         }
         if (!list.length) throw new Error('No plans returned.')
@@ -1509,11 +1528,11 @@ function PricingSection({ onSelectPlan }) {
         setPlansState('ok')
       } catch (err) {
         console.error('[PricingSection] fetch plans:', err.message)
-        // Fallback to known correct values so page is never broken
         setPlans([
-          { id: 'standard', name: 'Standard', price: 399, dataLabel: '150 GB',    deviceLimit: 2, days: 30 },
-          { id: 'vip',      name: 'VIP',      price: 699, dataLabel: '300 GB',    deviceLimit: 5, days: 30 },
-          { id: 'mvp',      name: 'MVP',      price: 949, dataLabel: 'Unlimited', deviceLimit: 8, days: 30 },
+          { id: 1, name: 'Standard', price_lkr: 399, data_gb: 500, devices: 2, validity_days: 30, badge: null,   accent_color: 'cyan'   },
+          { id: 2, name: 'MVP Lite', price_lkr: 499, data_gb: 0,   devices: 1, validity_days: 30, badge: null,   accent_color: 'green'  },
+          { id: 3, name: 'VIP',      price_lkr: 649, data_gb: 800, devices: 5, validity_days: 30, badge: 'HOT',  accent_color: 'orange' },
+          { id: 4, name: 'MVP Pro',  price_lkr: 899, data_gb: 0,   devices: 8, validity_days: 30, badge: 'BEST', accent_color: 'purple' },
         ])
         setPlansState('ok')
       }
@@ -1575,9 +1594,12 @@ function PricingSection({ onSelectPlan }) {
             gap: 20,
           }}>
             {premiumPlans.map((plan, i) => {
-              const theme = LANDING_PLAN_THEME[plan.id] || LANDING_PLAN_THEME.standard
-              const { badge, badgeClr, isPopular } = theme
-              const isHovered = hoveredIndex === i
+              const theme      = getOrderTheme(plan.accent_color)
+              const isPopular  = !!plan.badge
+              const badge      = plan.badge
+              const badgeClr   = theme.accent
+              const isHovered  = hoveredIndex === i
+              const dataLabel  = fmtOrderData(plan.data_gb)
               return (
                 <div
                   key={plan.id || i}
@@ -1586,7 +1608,7 @@ function PricingSection({ onSelectPlan }) {
                   style={{
                     background: 'rgba(7,17,28,0.85)',
                     backdropFilter: 'blur(20px)',
-                    border: `1px solid ${isHovered ? theme.accent : (isPopular ? theme.accent.replace('0.35', '0.2') : 'rgba(0,245,255,0.08)')}`,
+                    border: `1px solid ${isHovered ? theme.accentBorder : (isPopular ? theme.accentBorder : 'rgba(0,245,255,0.08)')}`,
                     borderRadius: 20,
                     padding: 24,
                     display: 'flex',
@@ -1610,26 +1632,26 @@ function PricingSection({ onSelectPlan }) {
 
                   <div>
                     <h4 style={{ color: C.textMuted, fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{plan.name}</h4>
-                    <div style={{ color: '#fff', fontSize: 28, fontWeight: 800, fontFamily: "'Orbitron', monospace", marginTop: 8 }}>{plan.dataLabel}</div>
+                    <div style={{ color: '#fff', fontSize: 28, fontWeight: 800, fontFamily: "'Orbitron', monospace", marginTop: 8 }}>{dataLabel}</div>
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-                    <span style={{ color: C.cyan, fontSize: 22, fontWeight: 800, fontFamily: "'Orbitron', monospace" }}>LKR {plan.price}</span>
-                    <span style={{ color: C.textDim, fontSize: 12 }}>/ {plan.days} days</span>
+                    <span style={{ color: theme.accent, fontSize: 22, fontWeight: 800, fontFamily: "'Orbitron', monospace" }}>LKR {plan.price_lkr}</span>
+                    <span style={{ color: C.textDim, fontSize: 12 }}>/ {plan.validity_days} days</span>
                   </div>
 
                   <ul style={{ listStyle: 'none', padding: 0, margin: '4px 0 auto', display: 'flex', flexDirection: 'column', gap: 7 }}>
                     <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <CheckCircle size={12} color={C.cyan} /> {plan.dataLabel} Data
+                      <CheckCircle size={12} color={theme.accent} /> {dataLabel} Data
                     </li>
                     <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <CheckCircle size={12} color={C.cyan} /> {plan.deviceLimit} Simultaneous Devices
+                      <CheckCircle size={12} color={theme.accent} /> {plan.devices} Simultaneous Devices
                     </li>
                     <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <CheckCircle size={12} color={C.cyan} /> AES-256 Encryption
+                      <CheckCircle size={12} color={theme.accent} /> AES-256 Encryption
                     </li>
                     <li style={{ fontSize: 12, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <CheckCircle size={12} color={C.cyan} /> WhatsApp Support
+                      <CheckCircle size={12} color={theme.accent} /> WhatsApp Support
                     </li>
                   </ul>
 
@@ -1638,10 +1660,10 @@ function PricingSection({ onSelectPlan }) {
                     style={{
                       width: '100%', padding: '12px', borderRadius: 12,
                       background: isPopular
-                        ? 'linear-gradient(135deg, rgba(249,115,22,0.15), rgba(191,0,255,0.15))'
+                        ? `linear-gradient(135deg, ${theme.accentBg}, rgba(191,0,255,0.1))`
                         : 'rgba(255,255,255,0.03)',
-                      border: `1px solid ${isPopular ? 'rgba(249,115,22,0.3)' : 'rgba(255,255,255,0.08)'}`,
-                      color: isPopular ? '#f97316' : C.textPrimary,
+                      border: `1px solid ${isPopular ? theme.accentBorder : 'rgba(255,255,255,0.08)'}`,
+                      color: isPopular ? theme.accent : C.textPrimary,
                       fontFamily: "'Orbitron', monospace", fontSize: 11, fontWeight: 700,
                       letterSpacing: 1, cursor: 'pointer', transition: 'all 0.2s',
                       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,

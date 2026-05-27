@@ -19,6 +19,7 @@ import {
 // ── 3x-ui Backend Integration ─────────────────────────────────────────────────
 import { useVpnStats }    from '../hooks/useVpnStats'
 import CreateVpnModal    from '../components/CreateVpnModal'
+import ManagePlans       from '../components/ManagePlans'
 // =============================================================================
 
 import { useState, useMemo, useCallback, useEffect } from 'react'
@@ -1631,6 +1632,7 @@ export default function AdminDashboard({ onLogout }) {
   const NAV = [
     { id: 'overview', Icon: Activity, label: 'Overview' },
     { id: 'orders',   Icon: Package,  label: 'Orders'   },
+    { id: 'plans',    Icon: BarChart2,label: 'Plans'    },
     { id: 'servers',  Icon: Server,   label: 'Servers'  },
     { id: 'settings', Icon: Settings, label: 'Settings' },
   ]
@@ -1776,6 +1778,7 @@ export default function AdminDashboard({ onLogout }) {
             onAdd={() => setShowAddModal(true)}
           />
         )}
+        {activeTab === 'plans'   && <ManagePlans showToast={showToast} />}
         {activeTab === 'servers'  && <ServersTab  servers={servers} />}
         {activeTab === 'settings' && (
           <SettingsTab

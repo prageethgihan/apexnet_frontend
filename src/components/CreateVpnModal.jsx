@@ -34,58 +34,22 @@ const ISP_PACKAGES = [
 ]
 
 // ─── Static fallback plans (used if API is unreachable) ──────────────────────
+// Field names match the new SQLite backend (snake_case)
 const FALLBACK_PLANS = [
-  { id: 'standard', name: 'Standard', price: '399 LKR', dataGB: 150, deviceLimit: 2, days: 30 },
-  { id: 'vip',      name: 'VIP',      price: '699 LKR', dataGB: 300, deviceLimit: 5, days: 30 },
-  { id: 'mvp',      name: 'MVP',      price: '949 LKR', dataGB: 0,   deviceLimit: 8, days: 30 },
+  { id: 1, name: 'Standard', price_lkr: 399, data_gb: 500, devices: 2, validity_days: 30, badge: null,   accent_color: 'cyan'   },
+  { id: 2, name: 'MVP Lite', price_lkr: 499, data_gb: 0,   devices: 1, validity_days: 30, badge: null,   accent_color: 'green'  },
+  { id: 3, name: 'VIP',      price_lkr: 649, data_gb: 800, devices: 5, validity_days: 30, badge: 'HOT',  accent_color: 'orange' },
+  { id: 4, name: 'MVP Pro',  price_lkr: 899, data_gb: 0,   devices: 8, validity_days: 30, badge: 'BEST', accent_color: 'purple' },
 ]
 
-// ─── Plan card visual config ──────────────────────────────────────────────────
-const PLAN_THEME = {
-  standard: {
-    Icon:        Wifi,
-    badge:       null,
-    // Tailwind class strings (applied via template literals)
-    selectedBorder: 'border-cyan-400/60',
-    selectedBg:     'bg-cyan-500/10',
-    selectedGlow:   'shadow-[0_0_30px_rgba(0,245,255,0.2)]',
-    idleBorder:     'border-white/[0.07] hover:border-cyan-400/30',
-    iconColor:      'text-cyan-400',
-    nameColor:      'text-cyan-300',
-    priceColor:     'text-cyan-200',
-    checkBg:        'bg-cyan-400',
-    dotColor:       'bg-cyan-400',
-  },
-  vip: {
-    Icon:        Zap,
-    badge:       'HOT',
-    badgeCls:    'bg-orange-500 shadow-[0_0_10px_rgba(249,115,22,0.55)]',
-    selectedBorder: 'border-orange-400/60',
-    selectedBg:     'bg-orange-500/10',
-    selectedGlow:   'shadow-[0_0_30px_rgba(249,115,22,0.22)]',
-    idleBorder:     'border-white/[0.07] hover:border-orange-400/30',
-    iconColor:      'text-orange-400',
-    nameColor:      'text-orange-300',
-    priceColor:     'text-orange-200',
-    checkBg:        'bg-orange-400',
-    dotColor:       'bg-orange-400',
-  },
-  mvp: {
-    Icon:        Globe,
-    badge:       'BEST',
-    badgeCls:    'bg-purple-500 shadow-[0_0_10px_rgba(191,0,255,0.55)]',
-    selectedBorder: 'border-purple-400/60',
-    selectedBg:     'bg-purple-500/10',
-    selectedGlow:   'shadow-[0_0_30px_rgba(191,0,255,0.22)]',
-    idleBorder:     'border-white/[0.07] hover:border-purple-400/30',
-    iconColor:      'text-purple-400',
-    nameColor:      'text-purple-300',
-    priceColor:     'text-purple-200',
-    checkBg:        'bg-purple-400',
-    dotColor:       'bg-purple-400',
-  },
+// ─── Accent colour map — keyed by plan.accent_color from DB ─────────────────────
+const ACCENT_MAP = {
+  cyan:   { Icon: Wifi,   hex: '#00f5ff', selBorder: 'border-cyan-400/60',    selBg: 'bg-cyan-500/10',    selGlow: 'shadow-[0_0_30px_rgba(0,245,255,0.2)]',    idleBorder: 'border-white/[0.07] hover:border-cyan-400/30',    iconCls: 'text-cyan-400',   nameCls: 'text-cyan-300',   priceCls: 'text-cyan-200',   checkBg: 'bg-cyan-400',   badgeBg: 'bg-cyan-500 shadow-[0_0_10px_rgba(0,245,255,0.5)]'   },
+  orange: { Icon: Zap,    hex: '#f97316', selBorder: 'border-orange-400/60',  selBg: 'bg-orange-500/10',  selGlow: 'shadow-[0_0_30px_rgba(249,115,22,0.22)]',  idleBorder: 'border-white/[0.07] hover:border-orange-400/30',  iconCls: 'text-orange-400', nameCls: 'text-orange-300', priceCls: 'text-orange-200', checkBg: 'bg-orange-400', badgeBg: 'bg-orange-500 shadow-[0_0_10px_rgba(249,115,22,0.55)]' },
+  purple: { Icon: Globe,  hex: '#bf00ff', selBorder: 'border-purple-400/60',  selBg: 'bg-purple-500/10',  selGlow: 'shadow-[0_0_30px_rgba(191,0,255,0.22)]',   idleBorder: 'border-white/[0.07] hover:border-purple-400/30',  iconCls: 'text-purple-400', nameCls: 'text-purple-300', priceCls: 'text-purple-200', checkBg: 'bg-purple-400', badgeBg: 'bg-purple-500 shadow-[0_0_10px_rgba(191,0,255,0.55)]' },
+  green:  { Icon: Shield, hex: '#4ade80', selBorder: 'border-green-400/60',   selBg: 'bg-green-500/10',   selGlow: 'shadow-[0_0_30px_rgba(74,222,128,0.2)]',   idleBorder: 'border-white/[0.07] hover:border-green-400/30',   iconCls: 'text-green-400',  nameCls: 'text-green-300',  priceCls: 'text-green-200',  checkBg: 'bg-green-400',  badgeBg: 'bg-green-500 shadow-[0_0_10px_rgba(74,222,128,0.5)]'  },
 }
-const DEFAULT_THEME = PLAN_THEME.standard
+const getTheme = (ac) => ACCENT_MAP[ac] || ACCENT_MAP.cyan
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 const fmtData = (gb) => (gb === 0 || gb === null || gb === undefined) ? 'Unlimited' : `${gb} GB`
@@ -114,10 +78,10 @@ function PlanSkeletons () {
   )
 }
 
-// ── Single plan card ─────────────────────────────────────────────────────────
+// ── Single plan card (accent_color-driven) ─────────────────────────────────────
 function PlanCard ({ plan, selected, onSelect }) {
-  const theme = PLAN_THEME[plan.id] || DEFAULT_THEME
-  const { Icon } = theme
+  const t    = getTheme(plan.accent_color)
+  const Icon = t.Icon
 
   return (
     <button
@@ -130,19 +94,19 @@ function PlanCard ({ plan, selected, onSelect }) {
         text-center w-full cursor-pointer
         transition-all duration-200 focus:outline-none
         ${selected
-          ? `${theme.selectedBorder} ${theme.selectedBg} ${theme.selectedGlow} -translate-y-1`
-          : `${theme.idleBorder} bg-white/[0.02] hover:-translate-y-0.5`
+          ? `${t.selBorder} ${t.selBg} ${t.selGlow} -translate-y-1`
+          : `${t.idleBorder} bg-white/[0.02] hover:-translate-y-0.5`
         }
       `}
     >
-      {/* Badge (HOT / BEST) */}
-      {theme.badge && (
+      {/* Badge (HOT / BEST / POPULAR etc.) */}
+      {plan.badge && (
         <span className={`
           absolute -top-3 left-1/2 -translate-x-1/2
           text-[9px] font-black text-white px-2.5 py-0.5
-          rounded-full whitespace-nowrap ${theme.badgeCls}
+          rounded-full whitespace-nowrap ${t.badgeBg}
         `}>
-          {theme.badge}
+          {plan.badge}
         </span>
       )}
 
@@ -152,37 +116,37 @@ function PlanCard ({ plan, selected, onSelect }) {
         transition-colors duration-200
         ${selected ? 'bg-current/10' : 'bg-white/[0.05]'}
       `}>
-        <Icon size={18} className={selected ? theme.iconColor : 'text-slate-500'} />
+        <Icon size={18} className={selected ? t.iconCls : 'text-slate-500'} />
       </div>
 
       {/* Plan name */}
-      <span className={`text-[13px] font-extrabold leading-none ${selected ? theme.nameColor : 'text-slate-200'}`}>
+      <span className={`text-[13px] font-extrabold leading-none ${selected ? t.nameCls : 'text-slate-200'}`}>
         {plan.name}
       </span>
 
       {/* Price */}
       <span className={`
         font-['Orbitron',monospace] text-sm font-black leading-none
-        ${selected ? theme.priceColor : 'text-white'}
+        ${selected ? t.priceCls : 'text-white'}
       `}>
-        {plan.price}
+        LKR {plan.price_lkr}
       </span>
 
       {/* Data */}
-      <span className={`text-[11px] font-semibold ${selected ? theme.iconColor : 'text-slate-400'}`}>
-        {fmtData(plan.dataGB)}
+      <span className={`text-[11px] font-semibold ${selected ? t.iconCls : 'text-slate-400'}`}>
+        {fmtData(plan.data_gb)}
       </span>
 
       {/* Devices + days */}
       <span className="text-[10px] text-slate-500 leading-relaxed">
-        {plan.deviceLimit} device{plan.deviceLimit !== 1 ? 's' : ''}
+        {plan.devices} device{plan.devices !== 1 ? 's' : ''}
         <br />
-        {plan.days} days validity
+        {plan.validity_days} days validity
       </span>
 
       {/* Active checkmark pip */}
       {selected && (
-        <div className={`absolute bottom-2.5 right-2.5 w-4 h-4 rounded-full ${theme.checkBg} flex items-center justify-center`}>
+        <div className={`absolute bottom-2.5 right-2.5 w-4 h-4 rounded-full ${t.checkBg} flex items-center justify-center`}>
           <Check size={9} strokeWidth={3.5} className="text-black" />
         </div>
       )}
@@ -224,14 +188,15 @@ function CopyBtn ({ text }) {
 
 // ── Result card (shown after successful creation) ────────────────────────────
 function ResultCard ({ result, onClose }) {
-  // Normalise plan info — backend may return `plan` object or flat fields
+  // Normalise plan info — handles both new snake_case and legacy camelCase
   const plan = result.plan ?? {}
-  const planName   = plan.name        ?? result.planName   ?? '—'
-  const planPrice  = plan.priceLKR    ? `LKR ${plan.priceLKR}` : (plan.price ?? result.price ?? '—')
-  const dataLimitL = result.dataLimitLabel ?? fmtData(plan.dataLimitGB ?? plan.dataGB ?? 0)
-  const devices    = plan.deviceLimit ?? result.deviceLimit ?? '—'
+  const planName   = plan.name                       ?? '—'
+  const planPrice  = plan.price_lkr  ? `LKR ${plan.price_lkr}`
+                   : plan.priceLKR   ? `LKR ${plan.priceLKR}`  : '—'
+  const dataLimitL = result.dataLimitLabel ?? fmtData(plan.data_gb ?? plan.dataLimitGB ?? 0)
+  const devices    = plan.devices    ?? plan.deviceLimit ?? '—'
   const expiry     = result.expiryDate ?? '—'
-  const expiryDays = plan.expiryDays  ?? plan.days ?? 30
+  const expiryDays = plan.validity_days ?? plan.expiryDays ?? 30
 
   const details = [
     { label: 'Plan',    value: `${planName} — ${planPrice}` },
@@ -306,7 +271,7 @@ export default function CreateVpnModal ({ onClose, onSuccess }) {
   // ── Form fields ───────────────────────────────────────────────────────────
   const [customerName,    setCustomerName]    = useState('')
   const [selectedPackage, setSelectedPackage] = useState(ISP_PACKAGES[0].value)
-  const [selectedPlan,    setSelectedPlan]    = useState('vip')
+  const [selectedPlan,    setSelectedPlan]    = useState(null) // integer plan id from DB
   const [nameFocused,     setNameFocused]     = useState(false)
 
   // ── Plans (fetched from API) ──────────────────────────────────────────────
@@ -326,40 +291,51 @@ export default function CreateVpnModal ({ onClose, onSuccess }) {
       if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`)
 
       // ── Normalise response shape ───────────────────────────────────────
-      // Shape A (object keyed by plan id):
-      //   { "standard": { name, price, dataGB, deviceLimit, days }, ... }
-      // Shape B (array):
-      //   { success: true, plans: [{ id, name, priceLKR, dataLimitGB, ... }] }
+      // New shape (SQLite backend): { success: true, plans: [{ id(int), name,
+      //   price_lkr, data_gb, devices, validity_days, badge, accent_color }] }
+      // Legacy shape: keyed object { standard: { ... } }
       let list = []
 
       if (Array.isArray(json)) {
-        // Bare array (unusual but handle it)
-        list = json.map(p => ({ id: p.id ?? p.name?.toLowerCase(), ...p }))
+        list = json.map(p => ({
+          ...p,
+          // normalise legacy camelCase fields to snake_case
+          price_lkr:     p.price_lkr     ?? p.priceLKR     ?? 0,
+          data_gb:       p.data_gb       ?? p.dataGB       ?? p.dataLimitGB ?? 0,
+          devices:       p.devices       ?? p.deviceLimit  ?? 1,
+          validity_days: p.validity_days ?? p.expiryDays   ?? p.days ?? 30,
+          accent_color:  p.accent_color  ?? 'cyan',
+          badge:         p.badge         ?? null,
+        }))
 
       } else if (Array.isArray(json.plans)) {
-        // Shape B — our backend returns this
+        // Primary path — new SQLite backend (snake_case fields)
         list = json.plans.map(p => ({
-          id:          p.id,
-          name:        p.name,
-          price:       p.priceLKR ? `${p.priceLKR} LKR` : p.price,
-          dataGB:      p.dataLimitGB ?? p.dataGB ?? 0,
-          deviceLimit: p.deviceLimit,
-          days:        p.expiryDays ?? p.days ?? 30,
+          id:            p.id,
+          name:          p.name,
+          price_lkr:     p.price_lkr     ?? p.priceLKR   ?? 0,
+          data_gb:       p.data_gb       ?? p.dataGB     ?? p.dataLimitGB ?? 0,
+          devices:       p.devices       ?? p.deviceLimit ?? 1,
+          validity_days: p.validity_days ?? p.expiryDays ?? p.days ?? 30,
+          badge:         p.badge         ?? null,
+          accent_color:  p.accent_color  ?? 'cyan',
         }))
 
       } else if (typeof json === 'object' && json !== null) {
-        // Shape A — the format specified by the user
-        // Ignore meta fields like `success`, `message`
+        // Legacy keyed-object shape: { standard: { name, priceLKR, ... }, ... }
         const SKIP = new Set(['success', 'message', 'error', 'plans'])
+        let idx = 1
         list = Object.entries(json)
           .filter(([k]) => !SKIP.has(k))
-          .map(([id, p]) => ({
-            id,
-            name:        p.name  ?? id,
-            price:       p.price ?? (p.priceLKR ? `${p.priceLKR} LKR` : '—'),
-            dataGB:      p.dataGB ?? p.dataLimitGB ?? 0,
-            deviceLimit: p.deviceLimit ?? p.devices ?? 1,
-            days:        p.days  ?? p.expiryDays  ?? 30,
+          .map(([key, p]) => ({
+            id:            p.id            ?? idx++,
+            name:          p.name          ?? key,
+            price_lkr:     p.price_lkr     ?? p.priceLKR   ?? 0,
+            data_gb:       p.data_gb       ?? p.dataGB     ?? p.dataLimitGB ?? 0,
+            devices:       p.devices       ?? p.deviceLimit ?? 1,
+            validity_days: p.validity_days ?? p.expiryDays ?? p.days ?? 30,
+            badge:         p.badge         ?? null,
+            accent_color:  p.accent_color  ?? 'cyan',
           }))
       }
 
@@ -368,15 +344,19 @@ export default function CreateVpnModal ({ onClose, onSuccess }) {
       setPlans(list)
       setPlansState('ok')
 
-      // Keep selected plan valid
-      if (!list.find(p => p.id === 'vip')) setSelectedPlan(list[0].id)
+      // Auto-select: prefer HOT/badged plan → middle plan → first plan
+      const hot = list.find(p => p.badge)
+      const mid = list[Math.floor(list.length / 2)]
+      setSelectedPlan((hot ?? mid ?? list[0]).id)
 
     } catch (err) {
       console.error('[CreateVpnModal] loadPlans:', err.message)
       setPlansErrMsg(err.message || 'Could not load plans.')
       setPlansState('error')
-      // Fallback so the form stays usable
       setPlans(FALLBACK_PLANS)
+      // Auto-select the HOT plan from fallbacks too
+      const hotFb = FALLBACK_PLANS.find(p => p.badge)
+      setSelectedPlan((hotFb ?? FALLBACK_PLANS[0]).id)
     }
   }, [])
 
@@ -401,8 +381,7 @@ export default function CreateVpnModal ({ onClose, onSuccess }) {
         body: JSON.stringify({
           customerName:    customerName.trim(),
           selectedPackage,
-          selectedPlan,          // as requested
-          plan:            selectedPlan, // alias our backend accepts
+          planId:          selectedPlan, // integer plan id from DB
         }),
         signal: AbortSignal.timeout(20_000),
       })
